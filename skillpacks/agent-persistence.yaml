@@ -1,0 +1,11 @@
+name: agent-persistence
+version: 0.1.0
+severity:
+  agent_config_write: block
+paths:
+  - .claude/settings.json
+  - .codex/config.toml
+  - .cursor
+  - .continue
+  - .vscode/tasks.json
+

@@ -1,0 +1,14 @@
+name: network-c2
+version: 0.1.0
+severity:
+  unknown_network_during_install: prompt
+  canary_exfiltration: block
+apis:
+  - fetch
+  - requests
+  - urllib
+  - socket
+  - dns
+  - http.request
+  - https.request
+

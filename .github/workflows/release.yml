@@ -1,0 +1,48 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: write
+
+jobs:
+  test-and-release:
+    runs-on: macos-15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          check-latest: true
+
+      - name: Verify version tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "v$(cat VERSION)" = "${GITHUB_REF_NAME}"
+
+      - name: Test
+        run: go test -count=1 ./...
+
+      - name: Build release artifacts
+        env:
+          COMMIT: ${{ github.sha }}
+          DATE: ${{ github.event.head_commit.timestamp }}
+        run: ./scripts/build-release.sh
+
+      - name: Verify artifacts
+        run: ./scripts/verify-release-artifacts.sh
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${GITHUB_REF_NAME}" dist/* \
+            --title "local-sec ${GITHUB_REF_NAME}" \
+            --notes "Single-binary local-sec release. Verify checksums.txt before installing."

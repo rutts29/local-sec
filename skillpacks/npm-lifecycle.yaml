@@ -1,0 +1,13 @@
+name: npm-lifecycle
+version: 0.1.0
+severity:
+  preinstall: prompt
+  install: prompt
+  postinstall: prompt
+  prepare: prompt
+scripts:
+  - preinstall
+  - install
+  - postinstall
+  - prepare
+
