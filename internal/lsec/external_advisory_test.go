@@ -27,6 +27,32 @@ func TestParseExternalAdvisoryJSONFindsCriticalMalware(t *testing.T) {
 	}
 }
 
+func TestParseExternalAdvisoryJSONAcceptsSocketProgressPrefix(t *testing.T) {
+	body := []byte(`ℹ Requesting deep score data for this purl: pkg:npm/left-pad@1.3.0
+✔ Received Socket API response.
+{
+  "ok": true,
+  "data": {
+    "self": {
+      "alerts": [{
+        "name": "deprecated",
+        "severity": "middle",
+        "category": "maintenance"
+      }]
+    }
+  }
+}`)
+
+	advisories := parseExternalAdvisoryJSON("socket", "npm", "left-pad", "1.3.0", body)
+
+	if len(advisories) != 1 {
+		t.Fatalf("advisories = %#v, want one", advisories)
+	}
+	if advisories[0].Source != "socket" || advisories[0].Severity != "medium" {
+		t.Fatalf("advisory = %#v, want parsed socket medium advisory", advisories[0])
+	}
+}
+
 func TestRefreshExternalAdvisoriesUsesSocketAndSnykWhenAvailable(t *testing.T) {
 	bin := t.TempDir()
 	writeFakeTool(t, bin, "socket", `#!/bin/sh

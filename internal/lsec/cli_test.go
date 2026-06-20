@@ -156,6 +156,7 @@ func TestRewritePipInstallUsesWheelhouseForMultipleArtifacts(t *testing.T) {
 }
 
 func TestRefreshDependencyAdvisoriesChecksExactDependencies(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
 	store := NewStore(pathsFromRoot(t.TempDir()))
 	if err := store.Init(); err != nil {
 		t.Fatal(err)
@@ -744,6 +745,7 @@ func TestPreflightRequirementsAdvisoryBlocksBeforePipDownload(t *testing.T) {
 }
 
 func TestPreflightPromptsOnFreshNpmLockfilePackage(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
 	root := t.TempDir()
 	body := []byte(`{
 		"lockfileVersion": 3,

@@ -72,7 +72,7 @@ func parseExternalAdvisoryJSON(source, ecosystem, name, version string, body []b
 
 func parseExternalAdvisoryJSONChecked(source, ecosystem, name, version string, body []byte) ([]Advisory, bool) {
 	var doc any
-	if err := json.Unmarshal(body, &doc); err != nil {
+	if err := json.Unmarshal(extractJSONPayload(body), &doc); err != nil {
 		return nil, false
 	}
 	var advisories []Advisory
@@ -104,6 +104,19 @@ func parseExternalAdvisoryJSONChecked(source, ecosystem, name, version string, b
 		})
 	})
 	return dedupeAdvisories(advisories), true
+}
+
+func extractJSONPayload(body []byte) []byte {
+	trimmed := strings.TrimSpace(string(body))
+	if strings.HasPrefix(trimmed, "{") || strings.HasPrefix(trimmed, "[") {
+		return []byte(trimmed)
+	}
+	for i, r := range trimmed {
+		if r == '{' || r == '[' {
+			return []byte(trimmed[i:])
+		}
+	}
+	return body
 }
 
 func walkJSONObjects(value any, visit func(map[string]any)) {
