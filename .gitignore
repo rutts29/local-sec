@@ -1,2 +1,7 @@
 dist/
+.aikido-*
+.aikido-opengrep-scan/
+.playwright-mcp/
+.semgrep-*
+.opengrep-*
 

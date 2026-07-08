@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 )
 
@@ -59,7 +60,6 @@ func shimInvokesGuard(path, command string) bool {
 
 func checkTools(stdout io.Writer) {
 	required := []string{"sqlite3"}
-	advisory := []string{"socket", "snyk", "osv-scanner", "pip-audit", "syft", "grype", "bumblebee", "ollama", "docker"}
 	for _, tool := range required {
 		if _, err := exec.LookPath(tool); err != nil {
 			fmt.Fprintf(stdout, "missing required local tool: %s\n", tool)
@@ -67,12 +67,55 @@ func checkTools(stdout io.Writer) {
 			fmt.Fprintf(stdout, "ok: %s\n", tool)
 		}
 	}
-	for _, tool := range advisory {
-		if _, err := exec.LookPath(tool); err != nil {
-			fmt.Fprintf(stdout, "optional missing: %s\n", tool)
-		} else {
-			fmt.Fprintf(stdout, "ok: %s\n", tool)
-		}
+	checkOptionalToolCapabilities(stdout, "current scan/advisory tools:", []toolCapability{
+		{name: "osv-scanner", state: "active scan/advisory", role: "npm lockfile advisory scan", next: "install only if you want npm lockfile provider coverage"},
+		{name: "pip-audit", state: "active scan/advisory", role: "pinned Python requirements advisory scan", next: "install only if you want pinned requirements coverage"},
+		{name: "grype", state: "active scan/advisory", role: "accepted CycloneDX SBOM advisory scan", next: "install only if you want SBOM advisory coverage"},
+	})
+	checkOptionalToolCapabilities(stdout, "advisory amplifiers:", []toolCapability{
+		{name: "socket", state: "preflight amplifier", role: "optional package preflight enrichment", next: "authenticate only if you want Socket enrichment"},
+		{name: "snyk", state: "preflight amplifier", role: "optional npm preflight enrichment", next: "authenticate only if you want Snyk enrichment"},
+	})
+	checkOptionalToolCapabilities(stdout, "detected-only / future integrations:", []toolCapability{
+		{name: "syft", state: "detected-only", role: "future SBOM inventory input", next: "no local-sec action yet"},
+		{name: "bumblebee", state: "detected-only", role: "future endpoint correlation input", next: "no local-sec action yet"},
+		{name: "cargo-vet", state: "detected-only", role: "future Rust audit input", next: "no local-sec action yet"},
+	})
+	checkOptionalToolCapabilities(stdout, "runtime/local evidence tools:", []toolCapability{
+		{name: "docker", state: "fixture/local evidence", role: "docker-fixture sandbox runner", next: "use only for controlled fixture runs"},
+		{name: "ollama", state: "fixture/local evidence", role: "local review helper", next: "treat output as advisory evidence"},
+	})
+	if runtime.GOOS == "darwin" {
+		checkMacOSEndpointApps(stdout, "/Applications")
 	}
 	fmt.Fprintf(stdout, "protected commands: %s\n", strings.Join(phaseOneShimCommands, ", "))
+}
+
+type toolCapability struct {
+	name  string
+	state string
+	role  string
+	next  string
+}
+
+func checkOptionalToolCapabilities(stdout io.Writer, heading string, tools []toolCapability) {
+	fmt.Fprintln(stdout, heading)
+	for _, tool := range tools {
+		if _, err := exec.LookPath(tool.name); err != nil {
+			fmt.Fprintf(stdout, "optional missing: %s [%s] role: %s; next: %s\n", tool.name, tool.state, tool.role, tool.next)
+		} else {
+			fmt.Fprintf(stdout, "ok: %s [%s] role: %s; next: %s\n", tool.name, tool.state, tool.role, tool.next)
+		}
+	}
+}
+
+func checkMacOSEndpointApps(stdout io.Writer, appRoot string) {
+	fmt.Fprintln(stdout, "macOS endpoint apps:")
+	for _, app := range []string{"BlockBlock.app", "LuLu.app", "KnockKnock.app"} {
+		if _, err := os.Stat(filepath.Join(appRoot, app)); err != nil {
+			fmt.Fprintf(stdout, "optional missing: %s [detected-only] role: endpoint context app; next: no local-sec action yet\n", app)
+			continue
+		}
+		fmt.Fprintf(stdout, "ok: %s [detected-only] role: endpoint context app; next: no local-sec action yet\n", app)
+	}
 }

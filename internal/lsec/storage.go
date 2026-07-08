@@ -58,12 +58,20 @@ type LocalStatus struct {
 	Packages         int
 	Approvals        int
 	ApprovedPackages int
+	ScanRuns         int
+	PartialScanRuns  int
+	ScanFindings     int
+	ScanDiagnostics  int
 	Verdicts         map[Verdict]int
 	Lanes            map[RiskLane]int
 }
 
 func NewStore(paths Paths) Store {
 	return Store{paths: paths}
+}
+
+func (s Store) eventLog() eventLog {
+	return eventLog{path: s.paths.Events}
 }
 
 func (s Store) Init() error {
@@ -101,29 +109,23 @@ CREATE TABLE IF NOT EXISTS scan_diagnostics(run_id TEXT, source_adapter TEXT, pa
 }
 
 func (s Store) AppendEvent(kind string, report any) error {
-	if err := os.MkdirAll(filepath.Dir(s.paths.Events), 0o700); err != nil {
-		return err
-	}
+	report = sanitizeEventPersistencePayload(report)
 	body, err := json.Marshal(report)
 	if err != nil {
 		return err
 	}
-	f, err := os.OpenFile(s.paths.Events, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-	if err := lockFile(f); err != nil {
-		return err
-	}
-	defer unlockFile(f)
-	if _, err := fmt.Fprintf(f, `{"kind":%q,"json":%s,"created_at":%q}`+"\n", kind, body, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
+	createdAt := time.Now().UTC()
+	if err := s.eventLog().append(kind, body, createdAt); err != nil {
 		return err
 	}
 	if _, err := exec.LookPath("sqlite3"); err == nil {
 		runID := eventRunID(report)
-		sql := fmt.Sprintf("INSERT INTO events(run_id,kind,json,created_at) VALUES('%s','%s','%s','%s');", sqlQuote(runID), sqlQuote(kind), sqlQuote(string(body)), time.Now().UTC().Format(time.RFC3339Nano))
-		_ = runSQLite(s.paths.DB, sql)
+		_ = execSQLiteParams(s.paths.DB, "INSERT INTO events(run_id,kind,json,created_at) VALUES(@run_id,@kind,@json,@created_at);", map[string]string{
+			"@run_id":     runID,
+			"@kind":       kind,
+			"@json":       string(body),
+			"@created_at": createdAt.Format(time.RFC3339Nano),
+		})
 		if r, ok := report.(RunReport); ok {
 			_ = s.RecordRunReport(r)
 		}
@@ -134,11 +136,44 @@ func (s Store) AppendEvent(kind string, report any) error {
 	return nil
 }
 
+func (s Store) AppendNotificationEvent(kind string, report any) error {
+	if kind != "notification_planned" && kind != "notification_sent" {
+		return fmt.Errorf("unsupported notification event kind %q", kind)
+	}
+	report = sanitizeEventPersistencePayload(report)
+	body, err := json.Marshal(report)
+	if err != nil {
+		return err
+	}
+	return s.eventLog().append(kind, body, time.Now().UTC())
+}
+
+func sanitizeEventPersistencePayload(report any) any {
+	switch r := report.(type) {
+	case RunReport:
+		return sanitizeRunReportForPersistence(r)
+	case EvidenceBundle:
+		return sanitizeEvidenceBundleForPersistence(r)
+	case inboxLLMReviewEvent:
+		return sanitizeInboxLLMReviewEvent(r)
+	default:
+		return report
+	}
+}
+
 func eventRunID(report any) string {
 	switch r := report.(type) {
 	case RunReport:
 		return r.RunID
 	case EvidenceBundle:
+		return r.RunID
+	case ScanSummary:
+		return r.RunID
+	case remoteSandboxEvent:
+		return r.RunID
+	case NotificationPayload:
+		return r.RunID
+	case NotificationSentEvent:
 		return r.RunID
 	default:
 		return ""
@@ -146,72 +181,54 @@ func eventRunID(report any) string {
 }
 
 func (s Store) LoadEventSummaries(limit int) ([]EventSummary, error) {
-	body, err := os.ReadFile(s.paths.Events)
-	if os.IsNotExist(err) {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, err
-	}
 	var summaries []EventSummary
-	for _, line := range strings.Split(string(body), "\n") {
-		if strings.TrimSpace(line) == "" {
-			continue
-		}
+	err := s.eventLog().forEach(func(line []byte) error {
 		summary, ok := parseEventSummary([]byte(line))
 		if ok {
 			summaries = append(summaries, summary)
+			if limit > 0 && len(summaries) > limit {
+				summaries = summaries[1:]
+			}
 		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
 	}
-	for i, j := 0, len(summaries)-1; i < j; i, j = i+1, j-1 {
-		summaries[i], summaries[j] = summaries[j], summaries[i]
-	}
-	if limit > 0 && len(summaries) > limit {
-		summaries = summaries[:limit]
-	}
+	reverseEventSummaries(summaries)
 	return summaries, nil
 }
 
+func reverseEventSummaries(summaries []EventSummary) {
+	for i, j := 0, len(summaries)-1; i < j; i, j = i+1, j-1 {
+		summaries[i], summaries[j] = summaries[j], summaries[i]
+	}
+}
+
 func (s Store) LoadRunReport(runID string) (RunReport, bool, error) {
-	body, err := os.ReadFile(s.paths.Events)
-	if os.IsNotExist(err) {
-		return RunReport{}, false, nil
-	}
-	if err != nil {
-		return RunReport{}, false, err
-	}
 	var found RunReport
 	ok := false
-	for _, line := range strings.Split(string(body), "\n") {
-		if strings.TrimSpace(line) == "" {
-			continue
-		}
+	err := s.eventLog().forEach(func(line []byte) error {
 		report, lineOK := parseEventRunReport([]byte(line))
 		if !lineOK || report.RunID != runID {
-			continue
+			return nil
 		}
 		found = report
 		ok = true
+		return nil
+	})
+	if err != nil {
+		return RunReport{}, false, err
 	}
 	return found, ok, nil
 }
 
 func (s Store) LoadSeenMaintainers(ecosystem, name string) ([]string, error) {
-	body, err := os.ReadFile(s.paths.Events)
-	if os.IsNotExist(err) {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, err
-	}
 	seen := map[string]bool{}
-	for _, line := range strings.Split(string(body), "\n") {
-		if strings.TrimSpace(line) == "" {
-			continue
-		}
+	err := s.eventLog().forEach(func(line []byte) error {
 		report, lineOK := parseEventRunReport([]byte(line))
 		if !lineOK || !reportMatchesPackage(report, ecosystem, name) {
-			continue
+			return nil
 		}
 		for _, maintainer := range report.Version.Maintainers {
 			normalized := strings.ToLower(strings.TrimSpace(maintainer))
@@ -219,6 +236,10 @@ func (s Store) LoadSeenMaintainers(ecosystem, name string) ([]string, error) {
 				seen[normalized] = true
 			}
 		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
 	}
 	var maintainers []string
 	for maintainer := range seen {
@@ -243,26 +264,16 @@ func reportMatchesPackage(report RunReport, ecosystem, name string) bool {
 }
 
 func (s Store) LoadPackageSummaries(limit int) ([]PackageSummary, error) {
-	body, err := os.ReadFile(s.paths.Events)
-	if os.IsNotExist(err) {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, err
-	}
 	approvals, err := s.LoadApprovals()
 	if err != nil {
 		return nil, err
 	}
 	var summaries []PackageSummary
 	seen := map[string]bool{}
-	for _, line := range strings.Split(string(body), "\n") {
-		if strings.TrimSpace(line) == "" {
-			continue
-		}
+	err = s.eventLog().forEach(func(line []byte) error {
 		report, createdAt, ok := parseEventRunReportWithCreatedAt([]byte(line))
 		if !ok {
-			continue
+			return nil
 		}
 		for _, artifact := range report.Artifacts {
 			if artifact.Ecosystem == "" || artifact.Name == "" || artifact.Version == "" || artifact.SHA256 == "" {
@@ -286,6 +297,10 @@ func (s Store) LoadPackageSummaries(limit int) ([]PackageSummary, error) {
 				SeenAt:    createdAt,
 			})
 		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
 	}
 	for i, j := 0, len(summaries)-1; i < j; i, j = i+1, j-1 {
 		summaries[i], summaries[j] = summaries[j], summaries[i]
@@ -297,7 +312,7 @@ func (s Store) LoadPackageSummaries(limit int) ([]PackageSummary, error) {
 }
 
 func (s Store) LoadStatus() (LocalStatus, error) {
-	events, err := s.LoadEventSummaries(0)
+	snapshot, err := s.loadStatusEventSnapshot()
 	if err != nil {
 		return LocalStatus{}, err
 	}
@@ -309,13 +324,17 @@ func (s Store) LoadStatus() (LocalStatus, error) {
 	if err != nil {
 		return LocalStatus{}, err
 	}
-	uniqueEvents := latestEventByRunID(events)
+	uniqueEvents := latestEventByRunID(snapshot.events)
 	status := LocalStatus{
-		Runs:      len(uniqueEvents),
-		Packages:  len(packages),
-		Approvals: len(approvals),
-		Verdicts:  map[Verdict]int{},
-		Lanes:     map[RiskLane]int{},
+		Runs:            len(uniqueEvents),
+		Packages:        len(packages),
+		Approvals:       len(approvals),
+		ScanRuns:        snapshot.scans.Runs,
+		PartialScanRuns: snapshot.scans.PartialRuns,
+		ScanFindings:    snapshot.scans.Findings,
+		ScanDiagnostics: snapshot.scans.Diagnostics,
+		Verdicts:        map[Verdict]int{},
+		Lanes:           map[RiskLane]int{},
 	}
 	for _, event := range uniqueEvents {
 		if event.Verdict != "" {
@@ -344,34 +363,81 @@ func latestEventByRunID(events []EventSummary) []EventSummary {
 		if seen[key] {
 			continue
 		}
+		if event.RunID != "" && event.Verdict == "" && hasReportEventForRun(events, event.RunID) {
+			continue
+		}
 		seen[key] = true
 		unique = append(unique, event)
 	}
 	return unique
 }
 
-func parseEventSummary(line []byte) (EventSummary, bool) {
-	var row struct {
-		Kind      string          `json:"kind"`
-		JSON      json.RawMessage `json:"json"`
-		CreatedAt string          `json:"created_at"`
+func hasReportEventForRun(events []EventSummary, runID string) bool {
+	for _, event := range events {
+		if event.RunID == runID && event.Verdict != "" {
+			return true
+		}
 	}
-	if err := json.Unmarshal(line, &row); err != nil {
+	return false
+}
+
+func parseEventSummary(line []byte) (EventSummary, bool) {
+	row, createdAt, ok := parseEventLogRow(line)
+	if !ok {
+		return EventSummary{}, false
+	}
+	return parseEventSummaryRow(row, createdAt)
+}
+
+func parseEventSummaryRow(row eventLogRow, createdAt time.Time) (EventSummary, bool) {
+	if row.Kind == "scan" {
+		if summary, ok := parseScanSummaryPayload(row.JSON); ok {
+			return scanEventSummary(row.Kind, summary, createdAt), true
+		}
+		return EventSummary{}, false
+	}
+	if row.Kind == "remote_sandbox" {
+		var event remoteSandboxEvent
+		if err := json.Unmarshal(row.JSON, &event); err == nil && event.RunID != "" {
+			return EventSummary{
+				Kind:      row.Kind,
+				RunID:     event.RunID,
+				Command:   remoteSandboxEventCommand(event),
+				CreatedAt: createdAt,
+			}, true
+		}
 		return EventSummary{}, false
 	}
 	var report RunReport
-	if err := json.Unmarshal(row.JSON, &report); err != nil {
-		return EventSummary{}, false
+	if err := json.Unmarshal(row.JSON, &report); err == nil && report.RunID != "" {
+		return EventSummary{
+			Kind:      row.Kind,
+			RunID:     report.RunID,
+			Verdict:   report.Decision.Verdict,
+			Lane:      report.Decision.Lane,
+			Command:   strings.Join(report.Analysis.Raw, " "),
+			CreatedAt: createdAt,
+		}, true
 	}
-	createdAt, _ := time.Parse(time.RFC3339Nano, row.CreatedAt)
+	return EventSummary{}, false
+}
+
+func scanEventSummary(kind string, summary ScanSummary, createdAt time.Time) EventSummary {
 	return EventSummary{
-		Kind:      row.Kind,
-		RunID:     report.RunID,
-		Verdict:   report.Decision.Verdict,
-		Lane:      report.Decision.Lane,
-		Command:   strings.Join(report.Analysis.Raw, " "),
+		Kind:      kind,
+		RunID:     summary.RunID,
+		Command:   scanEventCommand(summary),
 		CreatedAt: createdAt,
-	}, true
+	}
+}
+
+func scanEventCommand(summary ScanSummary) string {
+	return fmt.Sprintf("scan --profile %s --backend %s --network %s status=%s inventory=%d findings=%d diagnostics=%d",
+		summary.Profile, summary.Backend, summary.NetworkMode, summary.Status, summary.InventoryCount, summary.FindingCount, summary.DiagnosticCount)
+}
+
+func remoteSandboxEventCommand(event remoteSandboxEvent) string {
+	return fmt.Sprintf("remote-sandbox status=%s findings=%d", event.Status, event.FindingCount)
 }
 
 func parseEventRunReport(line []byte) (RunReport, bool) {
@@ -380,11 +446,11 @@ func parseEventRunReport(line []byte) (RunReport, bool) {
 }
 
 func parseEventRunReportWithCreatedAt(line []byte) (RunReport, time.Time, bool) {
-	var row struct {
-		JSON      json.RawMessage `json:"json"`
-		CreatedAt string          `json:"created_at"`
+	row, createdAt, ok := parseEventLogRow(line)
+	if !ok {
+		return RunReport{}, time.Time{}, false
 	}
-	if err := json.Unmarshal(line, &row); err != nil {
+	if !reportBearingEventKind(row.Kind) {
 		return RunReport{}, time.Time{}, false
 	}
 	var report RunReport
@@ -395,14 +461,23 @@ func parseEventRunReportWithCreatedAt(line []byte) (RunReport, time.Time, bool) 
 		}
 		report = bundle.RunReport()
 	}
-	createdAt, _ := time.Parse(time.RFC3339Nano, row.CreatedAt)
 	return report, createdAt, true
+}
+
+func reportBearingEventKind(kind string) bool {
+	switch kind {
+	case "preflight", "guard_preflight", "evidence", "sandbox_run":
+		return true
+	default:
+		return false
+	}
 }
 
 func (s Store) RecordRunReport(report RunReport) error {
 	if _, err := exec.LookPath("sqlite3"); err != nil {
 		return nil
 	}
+	report = sanitizeRunReportForPersistence(report)
 	createdAt := report.CreatedAt
 	if createdAt.IsZero() {
 		createdAt = time.Now().UTC()
@@ -441,9 +516,14 @@ func (s Store) RecordRunReport(report RunReport) error {
 }
 
 func (s Store) recordArtifact(artifact Artifact, seenAt time.Time) error {
-	sql := fmt.Sprintf("INSERT OR REPLACE INTO artifacts(sha256,ecosystem,name,version,path,first_seen_at) VALUES('%s','%s','%s','%s','%s','%s');",
-		sqlQuote(artifact.SHA256), sqlQuote(artifact.Ecosystem), sqlQuote(artifact.Name), sqlQuote(artifact.Version), sqlQuote(artifact.Path), seenAt.Format(time.RFC3339Nano))
-	return runSQLite(s.paths.DB, sql)
+	return execSQLiteParams(s.paths.DB, "INSERT OR REPLACE INTO artifacts(sha256,ecosystem,name,version,path,first_seen_at) VALUES(@sha256,@ecosystem,@name,@version,@path,@first_seen_at);", map[string]string{
+		"@sha256":        artifact.SHA256,
+		"@ecosystem":     artifact.Ecosystem,
+		"@name":          artifact.Name,
+		"@version":       artifact.Version,
+		"@path":          artifact.Path,
+		"@first_seen_at": seenAt.Format(time.RFC3339Nano),
+	})
 }
 
 func (s Store) recordPackageVersion(ecosystem, name string, version RegistryVersion, hash string, verdict Verdict, checkedAt time.Time) error {
@@ -451,15 +531,28 @@ func (s Store) recordPackageVersion(ecosystem, name string, version RegistryVers
 	if !version.PublishedAt.IsZero() {
 		publishedAt = version.PublishedAt.Format(time.RFC3339Nano)
 	}
-	sql := fmt.Sprintf("INSERT OR REPLACE INTO package_versions(ecosystem,name,version,published_at,artifact_sha256,advisory_status,first_seen_at,last_checked_at) VALUES('%s','%s','%s','%s','%s','%s','%s','%s');",
-		sqlQuote(ecosystem), sqlQuote(name), sqlQuote(version.Version), sqlQuote(publishedAt), sqlQuote(hash), sqlQuote(string(verdict)), checkedAt.Format(time.RFC3339Nano), checkedAt.Format(time.RFC3339Nano))
-	return runSQLite(s.paths.DB, sql)
+	return execSQLiteParams(s.paths.DB, "INSERT OR REPLACE INTO package_versions(ecosystem,name,version,published_at,artifact_sha256,advisory_status,first_seen_at,last_checked_at) VALUES(@ecosystem,@name,@version,@published_at,@artifact_sha256,@advisory_status,@first_seen_at,@last_checked_at);", map[string]string{
+		"@ecosystem":       ecosystem,
+		"@name":            name,
+		"@version":         version.Version,
+		"@published_at":    publishedAt,
+		"@artifact_sha256": hash,
+		"@advisory_status": string(verdict),
+		"@first_seen_at":   checkedAt.Format(time.RFC3339Nano),
+		"@last_checked_at": checkedAt.Format(time.RFC3339Nano),
+	})
 }
 
 func (s Store) recordStaticFinding(runID string, finding Finding, createdAt time.Time) error {
-	sql := fmt.Sprintf("INSERT INTO static_findings(run_id,code,severity,file,message,evidence,created_at) VALUES('%s','%s','%s','%s','%s','%s','%s');",
-		sqlQuote(runID), sqlQuote(finding.Code), sqlQuote(finding.Severity), sqlQuote(finding.File), sqlQuote(finding.Message), sqlQuote(finding.Evidence), createdAt.Format(time.RFC3339Nano))
-	return runSQLite(s.paths.DB, sql)
+	return execSQLiteParams(s.paths.DB, "INSERT INTO static_findings(run_id,code,severity,file,message,evidence,created_at) VALUES(@run_id,@code,@severity,@file,@message,@evidence,@created_at);", map[string]string{
+		"@run_id":     runID,
+		"@code":       finding.Code,
+		"@severity":   finding.Severity,
+		"@file":       finding.File,
+		"@message":    finding.Message,
+		"@evidence":   finding.Evidence,
+		"@created_at": createdAt.Format(time.RFC3339Nano),
+	})
 }
 
 func (s Store) recordReportAdvisories(advisories []Advisory, checkedAt time.Time) error {
@@ -470,9 +563,17 @@ func (s Store) recordReportAdvisories(advisories []Advisory, checkedAt time.Time
 			continue
 		}
 		seen[key] = true
-		sql := fmt.Sprintf("INSERT INTO advisory_checks(ecosystem,name,version,source,advisory_id,severity,advisory_type,checked_at) VALUES('%s','%s','%s','%s','%s','%s','%s','%s');",
-			sqlQuote(advisory.Ecosystem), sqlQuote(advisory.Name), sqlQuote(advisory.Version), sqlQuote(advisory.Source), sqlQuote(advisory.ID), sqlQuote(advisory.Severity), sqlQuote(advisory.Type), checkedAt.Format(time.RFC3339Nano))
-		if err := runSQLite(s.paths.DB, sql); err != nil {
+		err := execSQLiteParams(s.paths.DB, "INSERT INTO advisory_checks(ecosystem,name,version,source,advisory_id,severity,advisory_type,checked_at) VALUES(@ecosystem,@name,@version,@source,@advisory_id,@severity,@advisory_type,@checked_at);", map[string]string{
+			"@ecosystem":     advisory.Ecosystem,
+			"@name":          advisory.Name,
+			"@version":       advisory.Version,
+			"@source":        advisory.Source,
+			"@advisory_id":   advisory.ID,
+			"@severity":      advisory.Severity,
+			"@advisory_type": advisory.Type,
+			"@checked_at":    checkedAt.Format(time.RFC3339Nano),
+		})
+		if err != nil {
 			return err
 		}
 	}
@@ -487,9 +588,17 @@ func (s Store) recordResolutionDecision(report RunReport, createdAt time.Time) e
 	selectedSpec := report.Version.Selected.Version
 	latest := report.Version.Latest.Version
 	reason := strings.Join(report.Decision.Reasons, "; ")
-	sql := fmt.Sprintf("INSERT OR REPLACE INTO resolution_decisions(id,requested_command,requested_spec,selected_spec,latest_available,selected_reason,maturity_days,final_verdict,created_at) VALUES('%s','%s','%s','%s','%s','%s',%d,'%s','%s');",
-		sqlQuote(report.RunID), sqlQuote(strings.Join(report.Analysis.Raw, " ")), sqlQuote(requestedSpec), sqlQuote(selectedSpec), sqlQuote(latest), sqlQuote(reason), DefaultPolicy().MaturityDays, sqlQuote(string(report.Decision.Verdict)), createdAt.Format(time.RFC3339Nano))
-	return runSQLite(s.paths.DB, sql)
+	return execSQLiteParams(s.paths.DB, "INSERT OR REPLACE INTO resolution_decisions(id,requested_command,requested_spec,selected_spec,latest_available,selected_reason,maturity_days,final_verdict,created_at) VALUES(@id,@requested_command,@requested_spec,@selected_spec,@latest_available,@selected_reason,@maturity_days,@final_verdict,@created_at);", map[string]string{
+		"@id":                report.RunID,
+		"@requested_command": strings.Join(report.Analysis.Raw, " "),
+		"@requested_spec":    requestedSpec,
+		"@selected_spec":     selectedSpec,
+		"@latest_available":  latest,
+		"@selected_reason":   reason,
+		"@maturity_days":     fmt.Sprintf("%d", DefaultPolicy().MaturityDays),
+		"@final_verdict":     string(report.Decision.Verdict),
+		"@created_at":        createdAt.Format(time.RFC3339Nano),
+	})
 }
 
 func artifactHashFor(artifacts []Artifact, ecosystem, name, version string) string {
@@ -587,14 +696,29 @@ func (s Store) RecordAdvisoryChecks(entry AdvisoryCacheEntry) error {
 		return nil
 	}
 	if len(entry.Advisories) == 0 {
-		sql := fmt.Sprintf("INSERT INTO advisory_checks(ecosystem,name,version,source,advisory_id,severity,advisory_type,checked_at) VALUES('%s','%s','%s','%s','%s','%s','%s','%s');",
-			sqlQuote(entry.Ecosystem), sqlQuote(entry.Name), sqlQuote(entry.Version), "osv", "clean", "", "", entry.CheckedAt.Format(time.RFC3339Nano))
-		return runSQLite(s.paths.DB, sql)
+		return execSQLiteParams(s.paths.DB, "INSERT INTO advisory_checks(ecosystem,name,version,source,advisory_id,severity,advisory_type,checked_at) VALUES(@ecosystem,@name,@version,@source,@advisory_id,@severity,@advisory_type,@checked_at);", map[string]string{
+			"@ecosystem":     entry.Ecosystem,
+			"@name":          entry.Name,
+			"@version":       entry.Version,
+			"@source":        "osv",
+			"@advisory_id":   "clean",
+			"@severity":      "",
+			"@advisory_type": "",
+			"@checked_at":    entry.CheckedAt.Format(time.RFC3339Nano),
+		})
 	}
 	for _, advisory := range entry.Advisories {
-		sql := fmt.Sprintf("INSERT INTO advisory_checks(ecosystem,name,version,source,advisory_id,severity,advisory_type,checked_at) VALUES('%s','%s','%s','%s','%s','%s','%s','%s');",
-			sqlQuote(entry.Ecosystem), sqlQuote(entry.Name), sqlQuote(entry.Version), sqlQuote(advisory.Source), sqlQuote(advisory.ID), sqlQuote(advisory.Severity), sqlQuote(advisory.Type), entry.CheckedAt.Format(time.RFC3339Nano))
-		if err := runSQLite(s.paths.DB, sql); err != nil {
+		err := execSQLiteParams(s.paths.DB, "INSERT INTO advisory_checks(ecosystem,name,version,source,advisory_id,severity,advisory_type,checked_at) VALUES(@ecosystem,@name,@version,@source,@advisory_id,@severity,@advisory_type,@checked_at);", map[string]string{
+			"@ecosystem":     entry.Ecosystem,
+			"@name":          entry.Name,
+			"@version":       entry.Version,
+			"@source":        advisory.Source,
+			"@advisory_id":   advisory.ID,
+			"@severity":      advisory.Severity,
+			"@advisory_type": advisory.Type,
+			"@checked_at":    entry.CheckedAt.Format(time.RFC3339Nano),
+		})
+		if err != nil {
 			return err
 		}
 	}
@@ -646,9 +770,14 @@ func (s Store) AddApproval(approval Approval) error {
 	}
 	if _, err := exec.LookPath("sqlite3"); err == nil {
 		_ = s.deleteApprovalSQLite(approval.Ecosystem, approval.Name, approval.Version, approval.Hash)
-		sql := fmt.Sprintf("INSERT INTO approvals(ecosystem,name,version,hash,reason,created_at) VALUES('%s','%s','%s','%s','%s','%s');",
-			sqlQuote(approval.Ecosystem), sqlQuote(approval.Name), sqlQuote(approval.Version), sqlQuote(approval.Hash), sqlQuote(approval.Reason), approval.CreatedAt.Format(time.RFC3339Nano))
-		_ = runSQLite(s.paths.DB, sql)
+		_ = execSQLiteParams(s.paths.DB, "INSERT INTO approvals(ecosystem,name,version,hash,reason,created_at) VALUES(@ecosystem,@name,@version,@hash,@reason,@created_at);", map[string]string{
+			"@ecosystem":  approval.Ecosystem,
+			"@name":       approval.Name,
+			"@version":    approval.Version,
+			"@hash":       approval.Hash,
+			"@reason":     approval.Reason,
+			"@created_at": approval.CreatedAt.Format(time.RFC3339Nano),
+		})
 	}
 	return nil
 }
@@ -687,12 +816,18 @@ func (s Store) deleteApprovalSQLite(ecosystem, name, version, hash string) error
 	if _, err := exec.LookPath("sqlite3"); err != nil {
 		return nil
 	}
-	conditions := fmt.Sprintf("ecosystem='%s' AND name='%s' AND version='%s'",
-		sqlQuote(ecosystem), sqlQuote(name), sqlQuote(version))
-	if hash != "" {
-		conditions += fmt.Sprintf(" AND hash='%s'", sqlQuote(hash))
+	params := map[string]string{
+		"@ecosystem": ecosystem,
+		"@name":      name,
+		"@version":   version,
 	}
-	return runSQLite(s.paths.DB, "DELETE FROM approvals WHERE "+conditions+";")
+	query := "DELETE FROM approvals WHERE ecosystem=@ecosystem AND name=@name AND version=@version"
+	if hash != "" {
+		query += " AND hash=@hash"
+		params["@hash"] = hash
+	}
+	query += ";"
+	return execSQLiteParams(s.paths.DB, query, params)
 }
 
 func IsApproved(approvals []Approval, ecosystem, name, version, hash string) bool {
@@ -727,6 +862,25 @@ func ArtifactsApproved(approvals []Approval, artifacts []Artifact) bool {
 
 func sqlQuote(s string) string {
 	return strings.ReplaceAll(s, "'", "''")
+}
+
+func execSQLiteParams(dbPath, query string, params map[string]string) error {
+	if _, err := exec.LookPath("sqlite3"); err != nil {
+		return nil
+	}
+	var script strings.Builder
+	script.WriteString(".parameter init\n")
+	for name, value := range params {
+		script.WriteString(fmt.Sprintf(".parameter set %s '%s'\n", name, sqlQuote(value)))
+	}
+	script.WriteString(query)
+	if !strings.HasSuffix(strings.TrimSpace(query), ";") {
+		script.WriteString(";")
+	}
+	script.WriteString("\n")
+	cmd := exec.Command("sqlite3", "-cmd", ".timeout 5000", dbPath)
+	cmd.Stdin = strings.NewReader(script.String())
+	return cmd.Run()
 }
 
 func validSHA256Hex(value string) bool {

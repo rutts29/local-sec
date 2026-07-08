@@ -76,12 +76,17 @@ type ScanSummary struct {
 }
 
 type ScanProviderSnapshot struct {
-	Provider     string `json:"provider"`
-	Status       string `json:"status"`
-	FetchedAt    string `json:"fetched_at,omitempty"`
-	CachedCount  int    `json:"cached_count,omitempty"`
-	QueriedCount int    `json:"queried_count,omitempty"`
-	Error        string `json:"error,omitempty"`
+	Provider       string         `json:"provider"`
+	Status         string         `json:"status"`
+	FetchedAt      string         `json:"fetched_at,omitempty"`
+	CachedCount    int            `json:"cached_count,omitempty"`
+	CandidateCount int            `json:"candidate_count"`
+	AcceptedCount  int            `json:"accepted_count"`
+	SkippedCount   int            `json:"skipped_count"`
+	QueriedCount   int            `json:"queried_count"`
+	FailedCount    int            `json:"failed_count"`
+	SkipReasons    map[string]int `json:"skip_reasons,omitempty"`
+	Error          string         `json:"error,omitempty"`
 }
 
 type ScanCatalogSnapshot struct {
@@ -120,6 +125,18 @@ func runScan(args []string, stdout io.Writer, paths Paths, store Store) error {
 		findings = append(findings, advisoryFindings...)
 		diagnostics = append(diagnostics, advisoryDiagnostics...)
 		providerSnapshots = snapshots
+		scannerFindings, scannerDiagnostics, scannerSnapshot := runOSVScannerProvider(context.Background(), runID, options.Roots)
+		findings = append(findings, scannerFindings...)
+		diagnostics = append(diagnostics, scannerDiagnostics...)
+		providerSnapshots = append(providerSnapshots, scannerSnapshot)
+		pipAuditFindings, pipAuditDiagnostics, pipAuditSnapshot := runPipAuditProvider(context.Background(), runID, options.Roots)
+		findings = append(findings, pipAuditFindings...)
+		diagnostics = append(diagnostics, pipAuditDiagnostics...)
+		providerSnapshots = append(providerSnapshots, pipAuditSnapshot)
+		grypeFindings, grypeDiagnostics, grypeSnapshot := runGrypeProvider(context.Background(), runID, observations)
+		findings = append(findings, grypeFindings...)
+		diagnostics = append(diagnostics, grypeDiagnostics...)
+		providerSnapshots = append(providerSnapshots, grypeSnapshot)
 	}
 	status := "complete"
 	if len(diagnostics) > 0 {
@@ -130,7 +147,14 @@ func runScan(args []string, stdout io.Writer, paths Paths, store Store) error {
 		Status: status, InventoryCount: len(observations), FindingCount: len(findings), DiagnosticCount: len(diagnostics),
 		StartedAt: started, FinishedAt: time.Now().UTC(),
 	}
-	if err := writeScanBundle(paths, runID, observations, findings, diagnostics, summary, providerSnapshots, catalogSnapshots); err != nil {
+	bundleObservations := redactScanObservations(observations, options.RedactPaths)
+	bundleFindings := redactScanFindings(findings, options.RedactPaths)
+	bundleDiagnostics := redactScanDiagnostics(diagnostics, options.RedactPaths)
+	bundleProviderSnapshots := redactScanProviderSnapshots(providerSnapshots, options.RedactPaths)
+	if err := writeScanBundle(paths, runID, bundleObservations, bundleFindings, bundleDiagnostics, summary, bundleProviderSnapshots, catalogSnapshots); err != nil {
+		return err
+	}
+	if err := store.AppendEvent("scan", summary); err != nil {
 		return err
 	}
 	return writeScanOutput(stdout, options, observations, findings, diagnostics, summary)
@@ -272,6 +296,8 @@ func scanMetadataFile(runID, path string, size int64) ([]ScanObservation, []Scan
 	switch {
 	case base == "package-lock.json" || base == "npm-shrinkwrap.json" || base == ".package-lock.json":
 		return scanNPMLockMetadata(runID, path)
+	case isCycloneDXSBOMFilename(base):
+		return scanCycloneDXSBOM(runID, path)
 	case base == "INSTALL_RECEIPT.json":
 		return scanHomebrewReceipt(runID, path)
 	case base == "package.json" && isEditorExtensionManifest(path):
@@ -834,8 +860,31 @@ func redactScanDiagnostics(diagnostics []ScanDiagnostic, mode string) []ScanDiag
 	copy(redacted, diagnostics)
 	for i := range redacted {
 		redacted[i].Path = redactPath(redacted[i].Path, mode)
+		redacted[i].Message = redactScanText(redacted[i].Message, mode)
 	}
 	return redacted
+}
+
+func redactScanProviderSnapshots(snapshots []ScanProviderSnapshot, mode string) []ScanProviderSnapshot {
+	if mode == "" {
+		return snapshots
+	}
+	redacted := make([]ScanProviderSnapshot, len(snapshots))
+	copy(redacted, snapshots)
+	for i := range redacted {
+		redacted[i].Error = redactScanText(redacted[i].Error, mode)
+	}
+	return redacted
+}
+
+func redactScanText(value, mode string) string {
+	if value == "" || mode == "" {
+		return value
+	}
+	if filepath.IsAbs(value) {
+		return redactPath(value, mode)
+	}
+	return redactEvidenceText(value)
 }
 
 func redactPath(path, mode string) string {
