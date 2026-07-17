@@ -2,7 +2,6 @@ package lsec
 
 import (
 	"bufio"
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -22,6 +21,54 @@ func Run(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	if args[0] == "version" || args[0] == "--version" || args[0] == "-v" {
 		PrintVersion(stdout)
 		return nil
+	}
+	if args[0] == "sandbox" {
+		request, err := validateSandboxCLI(args[1:])
+		if err != nil {
+			return err
+		}
+		paths, err := DefaultPaths()
+		if err != nil {
+			return err
+		}
+		store := NewStore(paths)
+		if err := store.Init(); err != nil {
+			return err
+		}
+		return runSandboxCLI(request, stdout, store)
+	}
+	if args[0] == "remote-sandbox" {
+		paths, err := DefaultPaths()
+		if err != nil {
+			return err
+		}
+		store := NewStore(paths)
+		if err := store.Init(); err != nil {
+			return err
+		}
+		return runRemoteSandboxCLI(args[1:], stdout, store)
+	}
+	if args[0] == "notify" {
+		paths, err := DefaultPaths()
+		if err != nil {
+			return err
+		}
+		store := NewStore(paths)
+		if err := store.Init(); err != nil {
+			return err
+		}
+		return runNotifyCLI(args[1:], stdout, store)
+	}
+	if args[0] == "macos-detonation" {
+		paths, err := DefaultPaths()
+		if err != nil {
+			return err
+		}
+		store := NewStore(paths)
+		if err := store.Init(); err != nil {
+			return err
+		}
+		return runMacOSDetonationCLI(args[1:], stdout, store)
 	}
 	paths, err := DefaultPaths()
 	if err != nil {
@@ -73,6 +120,10 @@ func Run(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 		return runStatus(args[1:], stdout, store)
 	case "approvals":
 		return runApprovals(args[1:], stdout, store)
+	case "inbox":
+		return runInbox(args[1:], stdout, store)
+	case "notify":
+		return runNotifyCLI(args[1:], stdout, store)
 	case "history":
 		return runHistory(args[1:], stdout, store)
 	case "packages":
@@ -118,425 +169,6 @@ func runGuard(command []string, stdin io.Reader, stdout, stderr io.Writer, paths
 	return executeRealCommand(finalCommand, stdin, stdout, stderr)
 }
 
-func preflight(command []string, paths Paths, store Store) (RunReport, error) {
-	now := time.Now().UTC()
-	runID := NewRunID(now)
-	analysis := Classify(command)
-	var findings []Finding
-	if !hasBlockingRiskFlag(analysis) && analysis.RequirementsFile {
-		specs, requirementFindings := ParseRequirementsFiles(analysis.RequirementFiles)
-		analysis.PackageSpecs = specs
-		findings = append(findings, requirementFindings...)
-	}
-	if !hasBlockingRiskFlag(analysis) && analysis.LockfileInstall {
-		specs, lockfileFindings := ParseNPMLockfile(analysis.LockfilePath)
-		analysis.PackageSpecs = specs
-		findings = append(findings, lockfileFindings...)
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 75*time.Second)
-	defer cancel()
-
-	var version VersionInfo
-	if !hasBlockingRiskFlag(analysis) && !hasBlockingFinding(findings) && !analysis.RequirementsFile && !analysis.LockfileInstall {
-		version = ResolveVersion(ctx, analysis, DefaultPolicy().MaturityDays)
-	}
-	ecosystem := ecosystemForManager(analysis.Manager)
-	var advisories []Advisory
-	topLevelAdvisoryChecked := false
-	packageSpecsAdvisoryChecked := false
-	if !hasBlockingRiskFlag(analysis) && !hasBlockingFinding(findings) && !analysis.RequirementsFile && !analysis.LockfileInstall && len(analysis.PackageSpecs) > 0 && version.Selected.Version != "" {
-		var versionAdvisories []Advisory
-		var versionFindings []Finding
-		version, versionAdvisories, versionFindings = FollowAdvisoryCleanCandidate(ctx, store, ecosystem, analysis.PackageSpecs[0].Name, version, 30*time.Minute, DefaultPolicy().MaturityDays)
-		version.Maintainers = FetchPackageMaintainers(ctx, ecosystem, analysis.PackageSpecs[0].Name)
-		advisories = append(advisories, versionAdvisories...)
-		findings = append(findings, versionFindings...)
-		topLevelAdvisoryChecked = true
-	}
-	if !hasBlockingRiskFlag(analysis) && !hasBlockingFinding(findings) && !hasBlockingAdvisory(advisories) && (analysis.RequirementsFile || analysis.LockfileInstall) {
-		findings = append(findings, CheckPackageSpecMaturity(ctx, ecosystem, analysis.PackageSpecs, DefaultPolicy().MaturityDays)...)
-		specAdvisories, specFindings := RefreshPackageSpecAdvisories(ctx, store, ecosystem, analysis.PackageSpecs, 30*time.Minute)
-		advisories = append(advisories, specAdvisories...)
-		findings = append(findings, specFindings...)
-		externalAdvisories, externalFindings := RefreshExternalAdvisories(ctx, packageSpecsAsDependencyRefs(ecosystem, analysis.PackageSpecs))
-		advisories = append(advisories, externalAdvisories...)
-		findings = append(findings, externalFindings...)
-		packageSpecsAdvisoryChecked = true
-	}
-	staging := filepath.Join(paths.Staging, runID)
-	var artifacts []Artifact
-	if !hasBlockingRiskFlag(analysis) && !hasBlockingFinding(findings) && !hasBlockingAdvisory(advisories) && !analysis.LockfileInstall {
-		var stageFindings []Finding
-		artifacts, stageFindings = StageArtifacts(ctx, staging, analysis, version)
-		findings = append(findings, stageFindings...)
-	}
-	if !hasBlockingRiskFlag(analysis) && !hasBlockingFinding(findings) && len(artifacts) > 0 {
-		skip := map[string]bool{}
-		if topLevelAdvisoryChecked && len(analysis.PackageSpecs) > 0 && version.Selected.Version != "" {
-			skip[dependencyKey(ecosystem, analysis.PackageSpecs[0].Name, version.Selected.Version)] = true
-		}
-		findings = append(findings, CheckArtifactMaturity(ctx, artifacts, DefaultPolicy().MaturityDays, skip)...)
-		artifactAdvisories, artifactFindings := RefreshArtifactAdvisories(ctx, store, artifacts, 30*time.Minute, skip)
-		advisories = append(advisories, artifactAdvisories...)
-		findings = append(findings, artifactFindings...)
-	}
-	if !hasBlockingRiskFlag(analysis) && !analysis.RequirementsFile && !analysis.LockfileInstall && len(artifacts) > 0 {
-		dependencyAdvisories, dependencyFindings := RefreshDependencyAdvisories(ctx, store, artifacts, 30*time.Minute)
-		advisories = append(advisories, dependencyAdvisories...)
-		findings = append(findings, dependencyFindings...)
-	}
-	if !hasBlockingRiskFlag(analysis) && !hasBlockingFinding(findings) && (analysis.RequirementsFile || analysis.LockfileInstall) {
-		if !packageSpecsAdvisoryChecked {
-			findings = append(findings, CheckPackageSpecMaturity(ctx, ecosystem, analysis.PackageSpecs, DefaultPolicy().MaturityDays)...)
-			specAdvisories, specFindings := RefreshPackageSpecAdvisories(ctx, store, ecosystem, analysis.PackageSpecs, 30*time.Minute)
-			advisories = append(advisories, specAdvisories...)
-			findings = append(findings, specFindings...)
-			externalAdvisories, externalFindings := RefreshExternalAdvisories(ctx, packageSpecsAsDependencyRefs(ecosystem, analysis.PackageSpecs))
-			advisories = append(advisories, externalAdvisories...)
-			findings = append(findings, externalFindings...)
-		}
-		if len(artifacts) > 0 {
-			dependencyAdvisories, dependencyFindings := RefreshDependencyAdvisories(ctx, store, artifacts, 30*time.Minute)
-			advisories = append(advisories, dependencyAdvisories...)
-			findings = append(findings, dependencyFindings...)
-		}
-	} else if !topLevelAdvisoryChecked && !hasBlockingRiskFlag(analysis) && !hasBlockingFinding(findings) && len(analysis.PackageSpecs) > 0 && version.Selected.Version != "" {
-		topLevelAdvisories, advisoryFindings := RefreshAdvisories(ctx, store, ecosystem, analysis.PackageSpecs[0].Name, version.Selected.Version, 30*time.Minute)
-		advisories = append(advisories, topLevelAdvisories...)
-		findings = append(findings, advisoryFindings...)
-		externalAdvisories, externalFindings := RefreshExternalAdvisories(ctx, []DependencyRef{{Ecosystem: ecosystem, Name: analysis.PackageSpecs[0].Name, Version: version.Selected.Version, Raw: version.Selected.Version, Exact: true}})
-		advisories = append(advisories, externalAdvisories...)
-		findings = append(findings, externalFindings...)
-		dependencyAdvisories, dependencyFindings := RefreshDependencyAdvisories(ctx, store, artifacts, 30*time.Minute)
-		advisories = append(advisories, dependencyAdvisories...)
-		findings = append(findings, dependencyFindings...)
-	}
-	if !hasBlockingRiskFlag(analysis) && !hasBlockingFinding(findings) && !hasBlockingAdvisory(advisories) {
-		findings = append(findings, CheckFirstSeenPackages(store, ecosystem, analysis.PackageSpecs, artifacts)...)
-		if len(analysis.PackageSpecs) > 0 {
-			findings = append(findings, CheckFirstSeenMaintainers(store, ecosystem, analysis.PackageSpecs[0].Name, version.Maintainers)...)
-		}
-	}
-	decision := DefaultPolicy().Evaluate(analysis, version, findings, advisories)
-	if decision.Verdict != VerdictBlock && len(artifacts) > 0 {
-		approvals, err := store.LoadApprovals()
-		if err == nil && ArtifactsApproved(approvals, artifacts) {
-			decision = decisionWithLane(VerdictAllow, []string{"all staged artifact package/version/hash records are allowlisted"})
-		}
-	}
-	return RunReport{
-		RunID: runID, Analysis: analysis, Version: version, Artifacts: artifacts,
-		Findings: findings, Advisories: advisories, Decision: decision, CreatedAt: now,
-	}, nil
-}
-
-func packageSpecsAsDependencyRefs(ecosystem string, specs []PackageSpec) []DependencyRef {
-	refs := make([]DependencyRef, 0, len(specs))
-	for _, spec := range specs {
-		if spec.Name == "" || spec.Version == "" {
-			continue
-		}
-		refs = append(refs, DependencyRef{Ecosystem: ecosystem, Name: spec.Name, Version: spec.Version, Raw: spec.Raw, Exact: true})
-	}
-	return refs
-}
-
-func CheckFirstSeenPackages(store Store, ecosystem string, specs []PackageSpec, artifacts []Artifact) []Finding {
-	previous, err := store.LoadPackageSummaries(0)
-	if err != nil {
-		return []Finding{{
-			Code:     "package_history_unavailable",
-			Severity: "prompt",
-			Message:  "local package history could not be checked",
-			Evidence: err.Error(),
-		}}
-	}
-	seen := map[string]bool{}
-	for _, pkg := range previous {
-		seen[dependencyKey(pkg.Ecosystem, pkg.Name, "without-version")] = true
-	}
-	current := map[string]string{}
-	for _, spec := range specs {
-		if ecosystem == "" || spec.Name == "" {
-			continue
-		}
-		current[dependencyKey(ecosystem, spec.Name, "without-version")] = ecosystem + " " + spec.Name
-	}
-	for _, artifact := range artifacts {
-		if artifact.Ecosystem == "" || artifact.Name == "" {
-			continue
-		}
-		current[dependencyKey(artifact.Ecosystem, artifact.Name, "without-version")] = artifact.Ecosystem + " " + artifact.Name
-	}
-	var findings []Finding
-	for key, evidence := range current {
-		if seen[key] {
-			continue
-		}
-		findings = append(findings, Finding{
-			Code:     "first_seen_package",
-			Severity: "prompt",
-			Message:  "package has not been seen in local-sec history before",
-			Evidence: evidence,
-		})
-	}
-	return findings
-}
-
-func CheckFirstSeenMaintainers(store Store, ecosystem, name string, current []string) []Finding {
-	if ecosystem == "" || name == "" || len(current) == 0 {
-		return nil
-	}
-	previous, err := store.LoadSeenMaintainers(ecosystem, name)
-	if err != nil {
-		return []Finding{{
-			Code:     "maintainer_history_unavailable",
-			Severity: "prompt",
-			Message:  "local maintainer history could not be checked",
-			Evidence: err.Error(),
-		}}
-	}
-	if len(previous) == 0 {
-		return nil
-	}
-	seen := map[string]bool{}
-	for _, maintainer := range previous {
-		seen[strings.ToLower(strings.TrimSpace(maintainer))] = true
-	}
-	var findings []Finding
-	for _, maintainer := range current {
-		normalized := strings.ToLower(strings.TrimSpace(maintainer))
-		if normalized == "" || seen[normalized] {
-			continue
-		}
-		findings = append(findings, Finding{
-			Code:     "first_seen_maintainer",
-			Severity: "prompt",
-			Message:  "package maintainer has not been seen in local-sec history before",
-			Evidence: ecosystem + " " + name + " " + normalized,
-		})
-	}
-	return findings
-}
-
-func CheckPackageSpecMaturity(ctx context.Context, ecosystem string, specs []PackageSpec, maturityDays int) []Finding {
-	var findings []Finding
-	seen := map[string]bool{}
-	now := time.Now().UTC()
-	for _, spec := range specs {
-		if ecosystem == "" || spec.Name == "" || spec.Version == "" {
-			continue
-		}
-		key := dependencyKey(ecosystem, spec.Name, spec.Version)
-		if seen[key] {
-			continue
-		}
-		seen[key] = true
-		version, ok := resolvePinnedEcosystemVersion(ctx, ecosystem, spec.Name, spec.Version)
-		if !ok || version.PublishedAt.IsZero() {
-			findings = append(findings, Finding{
-				Code:     "package_publish_time_unverified",
-				Severity: "prompt",
-				Message:  "package publish time could not be verified",
-				Evidence: ecosystem + " " + spec.Name + " " + spec.Version,
-			})
-			continue
-		}
-		if version.Yanked || version.Deprecated {
-			findings = append(findings, Finding{
-				Code:     "package_version_removed",
-				Severity: "block",
-				Message:  "package version is yanked or deprecated",
-				Evidence: ecosystem + " " + spec.Name + " " + spec.Version,
-			})
-			continue
-		}
-		if now.Sub(version.PublishedAt) < time.Duration(maturityDays)*24*time.Hour {
-			findings = append(findings, Finding{
-				Code:     "package_version_inside_maturity_window",
-				Severity: "prompt",
-				Message:  "package version is inside maturity window",
-				Evidence: ecosystem + " " + spec.Name + " " + spec.Version,
-			})
-		}
-	}
-	return findings
-}
-
-func CheckArtifactMaturity(ctx context.Context, artifacts []Artifact, maturityDays int, skip map[string]bool) []Finding {
-	var findings []Finding
-	seen := map[string]bool{}
-	now := time.Now().UTC()
-	for _, artifact := range artifacts {
-		if artifact.Ecosystem == "" || artifact.Name == "" || artifact.Version == "" {
-			continue
-		}
-		key := dependencyKey(artifact.Ecosystem, artifact.Name, artifact.Version)
-		if skip[key] || seen[key] {
-			continue
-		}
-		seen[key] = true
-		version, ok := resolvePinnedEcosystemVersion(ctx, artifact.Ecosystem, artifact.Name, artifact.Version)
-		if !ok || version.PublishedAt.IsZero() {
-			findings = append(findings, Finding{
-				Code:     "artifact_publish_time_unverified",
-				Severity: "prompt",
-				File:     artifact.Path,
-				Message:  "staged artifact publish time could not be verified",
-				Evidence: artifact.Ecosystem + " " + artifact.Name + " " + artifact.Version,
-			})
-			continue
-		}
-		if version.Yanked || version.Deprecated {
-			findings = append(findings, Finding{
-				Code:     "artifact_version_removed",
-				Severity: "block",
-				File:     artifact.Path,
-				Message:  "staged artifact version is yanked or deprecated",
-				Evidence: artifact.Ecosystem + " " + artifact.Name + " " + artifact.Version,
-			})
-			continue
-		}
-		if now.Sub(version.PublishedAt) < time.Duration(maturityDays)*24*time.Hour {
-			findings = append(findings, Finding{
-				Code:     "artifact_version_inside_maturity_window",
-				Severity: "prompt",
-				File:     artifact.Path,
-				Message:  "staged artifact version is inside maturity window",
-				Evidence: artifact.Ecosystem + " " + artifact.Name + " " + artifact.Version,
-			})
-		}
-	}
-	return findings
-}
-
-func resolvePinnedEcosystemVersion(ctx context.Context, ecosystem, name, requestedVersion string) (RegistryVersion, bool) {
-	var versions []RegistryVersion
-	var err error
-	switch ecosystem {
-	case "npm":
-		versions, _, err = fetchNPMVersions(ctx, name)
-	case "PyPI":
-		versions, _, err = fetchPyPIVersions(ctx, name)
-	default:
-		return RegistryVersion{}, false
-	}
-	if err != nil {
-		return RegistryVersion{}, false
-	}
-	for _, version := range versions {
-		if version.Version == requestedVersion {
-			return version, true
-		}
-	}
-	return RegistryVersion{}, false
-}
-
-func RefreshArtifactAdvisories(ctx context.Context, store Store, artifacts []Artifact, cacheTTL time.Duration, skip map[string]bool) ([]Advisory, []Finding) {
-	var advisories []Advisory
-	var findings []Finding
-	seen := map[string]bool{}
-	for _, artifact := range artifacts {
-		if artifact.Ecosystem == "" || artifact.Name == "" || artifact.Version == "" {
-			continue
-		}
-		key := dependencyKey(artifact.Ecosystem, artifact.Name, artifact.Version)
-		if skip[key] || seen[key] {
-			continue
-		}
-		seen[key] = true
-		found, artifactFindings := RefreshAdvisories(ctx, store, artifact.Ecosystem, artifact.Name, artifact.Version, cacheTTL)
-		advisories = append(advisories, found...)
-		findings = append(findings, artifactFindings...)
-		externalAdvisories, externalFindings := RefreshExternalAdvisories(ctx, []DependencyRef{{
-			Ecosystem: artifact.Ecosystem,
-			Name:      artifact.Name,
-			Version:   artifact.Version,
-			Raw:       artifact.Version,
-			Exact:     true,
-		}})
-		advisories = append(advisories, externalAdvisories...)
-		findings = append(findings, externalFindings...)
-	}
-	return advisories, findings
-}
-
-func RefreshPackageSpecAdvisories(ctx context.Context, store Store, ecosystem string, specs []PackageSpec, cacheTTL time.Duration) ([]Advisory, []Finding) {
-	var advisories []Advisory
-	var findings []Finding
-	seen := map[string]bool{}
-	for _, spec := range specs {
-		if spec.Name == "" || spec.Version == "" {
-			continue
-		}
-		key := dependencyKey(ecosystem, spec.Name, spec.Version)
-		if seen[key] {
-			continue
-		}
-		seen[key] = true
-		found, specFindings := RefreshAdvisories(ctx, store, ecosystem, spec.Name, spec.Version, cacheTTL)
-		advisories = append(advisories, found...)
-		findings = append(findings, specFindings...)
-	}
-	return advisories, findings
-}
-
-func RefreshDependencyAdvisories(ctx context.Context, store Store, artifacts []Artifact, cacheTTL time.Duration) ([]Advisory, []Finding) {
-	var advisories []Advisory
-	var findings []Finding
-	seen := map[string]bool{}
-	for _, artifact := range artifacts {
-		for _, dep := range artifact.Dependencies {
-			if !dep.Exact {
-				continue
-			}
-			key := dependencyKey(dep.Ecosystem, dep.Name, dep.Version)
-			if seen[key] {
-				continue
-			}
-			seen[key] = true
-			found, depFindings := RefreshAdvisories(ctx, store, dep.Ecosystem, dep.Name, dep.Version, cacheTTL)
-			advisories = append(advisories, found...)
-			findings = append(findings, depFindings...)
-			externalAdvisories, externalFindings := RefreshExternalAdvisories(ctx, []DependencyRef{dep})
-			advisories = append(advisories, externalAdvisories...)
-			findings = append(findings, externalFindings...)
-		}
-	}
-	return advisories, findings
-}
-
-func dependencyKey(ecosystem, name, version string) string {
-	return ecosystem + "\x00" + name + "\x00" + version
-}
-
-func hasBlockingRiskFlag(analysis CommandAnalysis) bool {
-	for _, flag := range analysis.RiskFlags {
-		if flag.Severity == "block" {
-			return true
-		}
-	}
-	return false
-}
-
-func hasBlockingFinding(findings []Finding) bool {
-	for _, finding := range findings {
-		if finding.Severity == "block" {
-			return true
-		}
-	}
-	return false
-}
-
-func hasBlockingAdvisory(advisories []Advisory) bool {
-	for _, advisory := range advisories {
-		if strings.EqualFold(advisory.Type, "malware") || strings.EqualFold(advisory.Severity, "critical") {
-			return true
-		}
-	}
-	return false
-}
-
 func isDownloader(analysis CommandAnalysis) bool {
 	return analysis.Manager == "curl" || analysis.Manager == "wget"
 }
@@ -552,191 +184,6 @@ func streamStagedDownloaderArtifact(report RunReport, stdout io.Writer) error {
 	defer f.Close()
 	_, err = io.Copy(stdout, f)
 	return err
-}
-
-func rewriteCommandForSelectedVersion(command []string, report RunReport) []string {
-	if report.Analysis.LockfileInstall {
-		return []string{command[0], "ci", "--ignore-scripts"}
-	}
-	if report.Analysis.Manager == "npm" && report.Analysis.Action == "init" {
-		if rewritten, ok := rewriteNPMInitCommand(command, report); ok {
-			return rewritten
-		}
-	}
-	if report.Analysis.RequirementsFile {
-		if rewritten, ok := rewritePipRequirementsCommand(command, report); ok {
-			return rewritten
-		}
-	}
-	if !report.Version.Found || report.Version.Selected.Version == "" || len(report.Analysis.PackageSpecs) == 0 {
-		return command
-	}
-	selected := report.Analysis.PackageSpecs[0].Name
-	if selected == "" {
-		return command
-	}
-	if staged, ok := stagedInstallSpec(report); ok {
-		selected = staged
-	} else {
-		switch report.Analysis.Manager {
-		case "npm", "npx":
-			selected += "@" + report.Version.Selected.Version
-		case "pip", "pip3", "uv", "uvx", "pipx":
-			selected += "==" + report.Version.Selected.Version
-		default:
-			return command
-		}
-	}
-	out := append([]string(nil), command...)
-	for i, arg := range out {
-		if arg == report.Analysis.PackageSpecs[0].Raw {
-			out[i] = selected
-			break
-		}
-		if strings.HasPrefix(arg, "--package=") && strings.TrimPrefix(arg, "--package=") == report.Analysis.PackageSpecs[0].Raw {
-			out[i] = "--package=" + selected
-			break
-		}
-		if strings.HasPrefix(arg, "--from=") && strings.TrimPrefix(arg, "--from=") == report.Analysis.PackageSpecs[0].Raw {
-			out[i] = "--from=" + selected
-			break
-		}
-		if strings.HasPrefix(arg, "--spec=") && strings.TrimPrefix(arg, "--spec=") == report.Analysis.PackageSpecs[0].Raw {
-			out[i] = "--spec=" + selected
-			break
-		}
-	}
-	if report.Analysis.Manager == "npm" && report.Analysis.Action == "install" {
-		out = appendIfMissing(out, "--ignore-scripts")
-	}
-	if (report.Analysis.Manager == "pip" || report.Analysis.Manager == "pip3") && report.Analysis.Action == "install" {
-		if dir, ok := pipWheelhouseDir(report); ok && len(report.Artifacts) > 1 {
-			out = insertPipInstallFlags(out, report.Analysis, []string{"--no-index", "--find-links", dir})
-		} else {
-			out = insertPipInstallFlags(out, report.Analysis, []string{"--no-index", "--no-deps"})
-		}
-	}
-	return out
-}
-
-func appendIfMissing(args []string, value string) []string {
-	if stringSliceHas(args, value) {
-		return args
-	}
-	return append(args, value)
-}
-
-func stringSliceHas(args []string, value string) bool {
-	for _, arg := range args {
-		if arg == value {
-			return true
-		}
-	}
-	return false
-}
-
-func rewriteNPMInitCommand(command []string, report RunReport) ([]string, bool) {
-	if !report.Version.Found || report.Version.Selected.Version == "" || len(report.Analysis.PackageSpecs) == 0 {
-		return nil, false
-	}
-	selected := report.Analysis.PackageSpecs[0].Name
-	if selected == "" {
-		return nil, false
-	}
-	selected += "@" + report.Version.Selected.Version
-	out := []string{command[0], "exec", selected}
-	for i := 2; i < len(command); i++ {
-		if command[i] == report.Analysis.PackageSpecs[0].Raw {
-			out = append(out, command[i+1:]...)
-			return out, true
-		}
-	}
-	return nil, false
-}
-
-func rewritePipRequirementsCommand(command []string, report RunReport) ([]string, bool) {
-	if report.Analysis.Manager != "pip" && report.Analysis.Manager != "pip3" {
-		return nil, false
-	}
-	if len(report.Artifacts) == 0 {
-		return nil, false
-	}
-	dir := filepath.Dir(report.Artifacts[0].Path)
-	if dir == "." || dir == "" {
-		return nil, false
-	}
-	out := append([]string(nil), command...)
-	insert := pipInstallArgIndex(out, report.Analysis)
-	if insert < 0 {
-		return nil, false
-	}
-	flags := []string{"--require-hashes", "--no-index", "--find-links", dir}
-	out = append(out[:insert], append(flags, out[insert:]...)...)
-	return out, true
-}
-
-func insertPipInstallFlags(command []string, analysis CommandAnalysis, flags []string) []string {
-	insert := pipInstallArgIndex(command, analysis)
-	if insert < 0 {
-		return command
-	}
-	out := append([]string(nil), command...)
-	for i := len(flags) - 1; i >= 0; i-- {
-		if stringSliceHas(out, flags[i]) {
-			continue
-		}
-		out = append(out[:insert], append([]string{flags[i]}, out[insert:]...)...)
-	}
-	return out
-}
-
-func pipInstallArgIndex(command []string, analysis CommandAnalysis) int {
-	if analysis.PythonModulePip || isPythonPip(command) {
-		for i := 0; i < len(command); i++ {
-			if command[i] == "install" {
-				return i + 1
-			}
-		}
-		return -1
-	}
-	if len(command) >= 2 && command[1] == "install" {
-		return 2
-	}
-	return -1
-}
-
-func stagedInstallSpec(report RunReport) (string, bool) {
-	if len(report.Artifacts) != 1 {
-		return "", false
-	}
-	artifact := report.Artifacts[0]
-	switch report.Analysis.Manager {
-	case "npm":
-		if artifact.Kind == "tar" {
-			return artifact.Path, true
-		}
-	case "pip", "pip3":
-		if artifact.Kind == "wheel" {
-			return artifact.Path, true
-		}
-	}
-	return "", false
-}
-
-func pipWheelhouseDir(report RunReport) (string, bool) {
-	if len(report.Artifacts) == 0 {
-		return "", false
-	}
-	dir := filepath.Dir(report.Artifacts[0].Path)
-	if dir == "." || dir == "" {
-		return "", false
-	}
-	for _, artifact := range report.Artifacts {
-		if artifact.Kind != "wheel" || filepath.Dir(artifact.Path) != dir {
-			return "", false
-		}
-	}
-	return dir, true
 }
 
 func executeRealCommand(command []string, stdin io.Reader, stdout, stderr io.Writer) error {
@@ -954,6 +401,10 @@ func runStatus(args []string, stdout io.Writer, store Store) error {
 	fmt.Fprintf(stdout, "packages: %d\n", status.Packages)
 	fmt.Fprintf(stdout, "approvals: %d\n", status.Approvals)
 	fmt.Fprintf(stdout, "approved_packages: %d\n", status.ApprovedPackages)
+	fmt.Fprintf(stdout, "scan_runs: %d\n", status.ScanRuns)
+	fmt.Fprintf(stdout, "partial_scan_runs: %d\n", status.PartialScanRuns)
+	fmt.Fprintf(stdout, "scan_findings: %d\n", status.ScanFindings)
+	fmt.Fprintf(stdout, "scan_diagnostics: %d\n", status.ScanDiagnostics)
 	for _, verdict := range []Verdict{VerdictAllow, VerdictPrompt, VerdictBlock} {
 		fmt.Fprintf(stdout, "verdict[%s]: %d\n", verdict, status.Verdicts[verdict])
 	}
@@ -1019,9 +470,23 @@ func printUsage(w io.Writer) {
 	fmt.Fprintln(w, "  lsec packages [limit]")
 	fmt.Fprintln(w, "  lsec show <run_id>")
 	fmt.Fprintln(w, "  lsec scan --profile baseline|project|deep [--root PATH] [--network off|advisories] [--format table|json|ndjson] [--findings-only] [--redact-paths home|all|hash]")
+	fmt.Fprintln(w, "  lsec sandbox run --mode docker-fixture [--docker PATH] -- <command> ...")
+	fmt.Fprintln(w, "  lsec remote-sandbox prepare <run_id> [--out PATH]")
+	fmt.Fprintln(w, "  lsec remote-sandbox submit-fake <run_id> [--result PATH]")
+	fmt.Fprintln(w, "  lsec remote-sandbox submit <run_id> --result PATH")
+	fmt.Fprintln(w, "  lsec remote-sandbox run-local <run_id> [--result PATH]")
+	fmt.Fprintln(w, "  lsec macos-detonation prepare-fixture <run_id> [--out PATH]")
+	fmt.Fprintln(w, "  lsec macos-detonation run-local-fixture <run_id> [--result PATH]")
+	fmt.Fprintln(w, "  lsec macos-detonation validate-result --job PATH --result PATH")
+	fmt.Fprintln(w, "  lsec macos-detonation run-external <run_id>")
+	fmt.Fprintln(w, "  lsec notify plan <run_id> [--out PATH]")
+	fmt.Fprintln(w, "  lsec notify list [limit]")
+	fmt.Fprintln(w, "  lsec notify mark-sent <notification_id>")
+	fmt.Fprintln(w, "  lsec notify send-discord <notification_id>")
 	fmt.Fprintln(w, "  lsec install-shims")
 	fmt.Fprintln(w, "  lsec doctor")
 	fmt.Fprintln(w, "  lsec approvals list|add|revoke|suggest")
+	fmt.Fprintln(w, "  lsec inbox [limit]|show|approve-once|deny|view-later|review-llm")
 	fmt.Fprintln(w, "  lsec version")
 }
 

@@ -17,7 +17,7 @@ The project is maintained as a single Go binary with no third-party Go module de
 - Advisory refresh through OSV, with optional Socket and Snyk enrichment when those CLIs are already installed.
 - Exact package/version/hash approvals.
 - JSONL and optional SQLite local history.
-- Metadata-only local exposure scanning through `lsec scan`.
+- Privacy-conscious, metadata-first local exposure scanning through `lsec scan`.
 - Single-binary release archives with checksum verification.
 
 ## Current commands
@@ -29,8 +29,10 @@ lsec preflight python3 -m pip install <package>
 lsec guard uvx <tool>
 lsec scan --profile project --root .
 lsec evidence npm install <package>
+lsec sandbox run --mode docker-fixture -- npm install <package>
 lsec approvals list
 lsec approvals suggest <run_id>
+lsec inbox [limit]
 lsec install-shims
 lsec doctor
 lsec status
@@ -40,7 +42,7 @@ See [docs/technical-overview.md](docs/technical-overview.md) for the full comman
 
 ## Scanner
 
-`lsec scan` is not a generic full-disk source-code scanner. It is a privacy-conscious metadata inventory and correlation engine. It reads allowlisted metadata such as npm lockfiles, Python package metadata, Homebrew receipts, editor extension manifests, and sanitized MCP configuration. It can match local exposure catalogs and query OSV with only normalized ecosystem/name/version tuples.
+`lsec scan` is not a generic full-disk source-code scanner. It is a privacy-conscious metadata inventory and correlation engine. It reads allowlisted metadata such as npm lockfiles, Python package metadata, Homebrew receipts, editor extension manifests, and sanitized MCP configuration. With `--network advisories`, it can query OSV with normalized ecosystem/name/version tuples and optionally run `osv-scanner`, `pip-audit`, and `grype` against accepted metadata inputs when those tools are already installed.
 
 Canonical scan bundles are written under:
 
@@ -50,15 +52,7 @@ Canonical scan bundles are written under:
 
 ## Roadmap
 
-Planned next layers:
-
-- richer local exposure catalogs and finding history
-- Bumblebee/Syft/Grype/pip-audit/OSV-Scanner integrations
-- container detonation for risky packages
-- fake-home canaries and network sinkhole/proxy capture
-- LLM evidence review that can escalate risk but cannot override deterministic blocks
-- Discord approval inbox keyed by `run_id`
-- macOS-specific detonation and endpoint checks
+The phased roadmap and safety constraints live in [docs/roadmap.md](docs/roadmap.md). Keep the root README short; use that document for the remaining phase plan and host-safety guardrails.
 
 ## Release model
 

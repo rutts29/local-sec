@@ -47,22 +47,28 @@ func runExternalAdvisoryTool(ctx context.Context, path string, args []string, so
 		return advisories, nil
 	}
 	if !parsed {
-		return nil, []Finding{{
-			Code:     "external_advisory_failed",
-			Severity: "block",
-			Message:  source + " advisory check failed",
-			Evidence: limitString(string(out), 400),
-		}}
+		return nil, []Finding{externalAdvisoryFailureFinding(source, externalAdvisoryFailureStatus(err, "invalid_output"))}
 	}
 	if err != nil {
-		return nil, []Finding{{
-			Code:     "external_advisory_failed",
-			Severity: "block",
-			Message:  source + " advisory check failed",
-			Evidence: limitString(string(out), 400),
-		}}
+		return nil, []Finding{externalAdvisoryFailureFinding(source, "tool_error")}
 	}
 	return nil, nil
+}
+
+func externalAdvisoryFailureStatus(err error, fallback string) string {
+	if err != nil {
+		return "tool_error"
+	}
+	return fallback
+}
+
+func externalAdvisoryFailureFinding(source, status string) Finding {
+	return Finding{
+		Code:     "external_advisory_failed",
+		Severity: "block",
+		Message:  source + " advisory check failed",
+		Evidence: fmt.Sprintf("provider=%s status=%s", source, status),
+	}
 }
 
 func parseExternalAdvisoryJSON(source, ecosystem, name, version string, body []byte) []Advisory {

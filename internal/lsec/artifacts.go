@@ -30,7 +30,7 @@ func StageArtifacts(ctx context.Context, staging string, analysis CommandAnalysi
 	switch analysis.Manager {
 	case "npm":
 		if analysis.DirectURL || analysis.VCSDependency || analysis.LocalPath {
-			return nil, []Finding{{Code: "unsafe_npm_staging_spec", Severity: "block", Message: "npm VCS, direct URL, and local path specs can execute package hooks during staging; blocked before npm pack"}}
+			return nil, []Finding{{Code: "unsafe_npm_staging_spec", Severity: "block", Message: "npm VCS, direct URL, and local path specs can execute package hooks during staging; blocked before npm staging"}}
 		}
 		return stageNPM(ctx, staging, analysis, version)
 	case "pip", "pip3":
@@ -54,24 +54,6 @@ func StageArtifacts(ctx context.Context, staging string, analysis CommandAnalysi
 		findings = append(findings, Finding{Code: "dynamic_stage_deferred", Severity: "prompt", Message: "one-shot or uv-style execution requires later sandbox detonation"})
 	}
 	return nil, findings
-}
-
-func stageNPM(ctx context.Context, staging string, analysis CommandAnalysis, version VersionInfo) ([]Artifact, []Finding) {
-	npmPath, err := findRealExecutable("npm")
-	if err != nil {
-		return nil, []Finding{{Code: "missing_tool", Severity: "prompt", Message: "npm is not installed"}}
-	}
-	spec := selectedSpec(analysis, version, "@")
-	if spec == "" {
-		return nil, nil
-	}
-	cmd := exec.CommandContext(ctx, npmPath, "pack", spec, "--pack-destination", staging)
-	cmd.Env = safeEnv(staging)
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		return nil, []Finding{{Code: "stage_download_failed", Severity: "prompt", Message: "npm pack failed", Evidence: limitString(string(out), 400)}}
-	}
-	return collectArtifacts(staging)
 }
 
 func stagePip(ctx context.Context, staging string, analysis CommandAnalysis, version VersionInfo) ([]Artifact, []Finding) {
@@ -424,22 +406,34 @@ func unsafeArchivePath(name string) bool {
 }
 
 func safeEnv(staging string) []string {
-	home := filepath.Join(staging, "home")
-	cache := filepath.Join(staging, "cache")
-	config := filepath.Join(staging, "config")
-	_ = os.MkdirAll(home, 0o700)
-	_ = os.MkdirAll(cache, 0o700)
-	_ = os.MkdirAll(config, 0o700)
+	dirs := stagingEnvironmentDirs(staging)
+	_ = os.MkdirAll(dirs.home, 0o700)
+	_ = os.MkdirAll(dirs.cache, 0o700)
+	_ = os.MkdirAll(dirs.config, 0o700)
 	return []string{
 		"PATH=" + pathWithoutShim(),
-		"HOME=" + home,
-		"XDG_CONFIG_HOME=" + config,
-		"XDG_CACHE_HOME=" + cache,
-		"NPM_CONFIG_USERCONFIG=" + filepath.Join(config, "npmrc"),
-		"PIP_CONFIG_FILE=" + filepath.Join(config, "pip.conf"),
-		"PIP_CACHE_DIR=" + filepath.Join(cache, "pip"),
+		"HOME=" + dirs.home,
+		"XDG_CONFIG_HOME=" + dirs.config,
+		"XDG_CACHE_HOME=" + dirs.cache,
+		"NPM_CONFIG_USERCONFIG=" + filepath.Join(dirs.config, "npmrc"),
+		"PIP_CONFIG_FILE=" + filepath.Join(dirs.config, "pip.conf"),
+		"PIP_CACHE_DIR=" + filepath.Join(dirs.cache, "pip"),
 		"PIP_DISABLE_PIP_VERSION_CHECK=1",
 		"NO_COLOR=1",
+	}
+}
+
+type stagingEnvDirs struct {
+	home   string
+	cache  string
+	config string
+}
+
+func stagingEnvironmentDirs(staging string) stagingEnvDirs {
+	return stagingEnvDirs{
+		home:   filepath.Join(staging, "home"),
+		cache:  filepath.Join(staging, "cache"),
+		config: filepath.Join(staging, "config"),
 	}
 }
 

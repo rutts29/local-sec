@@ -53,8 +53,11 @@ func TestRewriteCommandUsesStagedNPMArtifact(t *testing.T) {
 		},
 		Version: VersionInfo{Found: true, Selected: RegistryVersion{Version: "1.3.0"}},
 		Artifacts: []Artifact{{
-			Path: "/tmp/left-pad-1.3.0.tgz",
-			Kind: "tar",
+			Path:      "/tmp/left-pad-1.3.0.tgz",
+			Kind:      "tar",
+			Ecosystem: "npm",
+			Name:      "left-pad",
+			Version:   "1.3.0",
 		}},
 	})
 
@@ -78,8 +81,11 @@ func TestRewriteNPMInstallDoesNotDuplicateIgnoreScripts(t *testing.T) {
 		},
 		Version: VersionInfo{Found: true, Selected: RegistryVersion{Version: "1.3.0"}},
 		Artifacts: []Artifact{{
-			Path: "/tmp/left-pad-1.3.0.tgz",
-			Kind: "tar",
+			Path:      "/tmp/left-pad-1.3.0.tgz",
+			Kind:      "tar",
+			Ecosystem: "npm",
+			Name:      "left-pad",
+			Version:   "1.3.0",
 		}},
 	})
 
@@ -91,6 +97,106 @@ func TestRewriteNPMInstallDoesNotDuplicateIgnoreScripts(t *testing.T) {
 	}
 	if count != 1 {
 		t.Fatalf("command = %#v, want one --ignore-scripts", got)
+	}
+}
+
+func TestRewriteNPMInstallDoesNotInstallMultipleStagedTarballsAsRoots(t *testing.T) {
+	got := rewriteCommandForSelectedVersion([]string{"npm", "install", "example"}, RunReport{
+		Analysis: CommandAnalysis{
+			Manager: "npm",
+			Action:  "install",
+			PackageSpecs: []PackageSpec{{
+				Raw:  "example",
+				Name: "example",
+			}},
+		},
+		Version: VersionInfo{Found: true, Selected: RegistryVersion{Version: "1.0.0"}},
+		Artifacts: []Artifact{
+			{Path: "/tmp/stage/example-1.0.0.tgz", Kind: "tar", Ecosystem: "npm", Name: "example", Version: "1.0.0"},
+			{Path: "/tmp/stage/dep-pkg-2.0.0.tgz", Kind: "tar", Ecosystem: "npm", Name: "dep-pkg", Version: "2.0.0"},
+		},
+	})
+
+	want := []string{"npm", "install", "example@1.0.0", "--ignore-scripts", "--cache", "/tmp/stage/npm-offline-cache", "--prefer-offline", "--offline"}
+	if len(got) != len(want) {
+		t.Fatalf("command = %#v, want %#v", got, want)
+	}
+	for i, wantArg := range want {
+		if got[i] != wantArg {
+			t.Fatalf("command[%d] = %q, want %q in %#v", i, got[i], wantArg, got)
+		}
+	}
+	if stringSliceContains(got, "/tmp/stage/dep-pkg-2.0.0.tgz") || stringSliceContains(got, "/tmp/stage/example-1.0.0.tgz") {
+		t.Fatalf("command = %#v, must not install transitive tarballs as direct npm args", got)
+	}
+}
+
+func TestAppendNPMOfflinePromotionFlagsOverridesOperatorCache(t *testing.T) {
+	report := RunReport{
+		Analysis: CommandAnalysis{
+			Manager: "npm",
+			Action:  "install",
+			PackageSpecs: []PackageSpec{{
+				Raw:  "example",
+				Name: "example",
+			}},
+		},
+		Version: VersionInfo{Found: true, Selected: RegistryVersion{Version: "1.0.0"}},
+		Artifacts: []Artifact{
+			{Path: "/tmp/stage/example-1.0.0.tgz", Kind: "tar", Ecosystem: "npm", Name: "example", Version: "1.0.0"},
+			{Path: "/tmp/stage/dep-pkg-2.0.0.tgz", Kind: "tar", Ecosystem: "npm", Name: "dep-pkg", Version: "2.0.0"},
+		},
+	}
+	got := appendNPMOfflinePromotionFlags([]string{"npm", "install", "example@1.0.0", "--cache", "/evil/cache", "--ignore-scripts"}, report)
+	if stringSliceContains(got, "/evil/cache") {
+		t.Fatalf("command = %#v, operator cache must be stripped", got)
+	}
+	if !stringSliceContains(got, "/tmp/stage/npm-offline-cache") || !stringSliceContains(got, "--offline") {
+		t.Fatalf("command = %#v, want seeded offline cache", got)
+	}
+}
+
+func TestCheckNPMStagedExecutionSupportBlocksSingleStagedTarballThatCannotPromote(t *testing.T) {
+	findings := CheckNPMStagedExecutionSupport(CommandAnalysis{
+		Manager: "npm",
+		Action:  "install",
+		PackageSpecs: []PackageSpec{{
+			Raw:  "example",
+			Name: "example",
+		}},
+	}, VersionInfo{Found: true, Selected: RegistryVersion{Version: "1.0.0"}}, []Artifact{{
+		Path:      "/tmp/stage/other-1.0.0.tgz",
+		Kind:      "tar",
+		Ecosystem: "npm",
+		Name:      "other",
+		Version:   "1.0.0",
+	}})
+
+	if firstFindingSeverity(findings, "npm_staged_dependency_install_unsupported") != "block" {
+		t.Fatalf("findings = %#v, want blocking unsupported staged dependency install", findings)
+	}
+}
+
+func TestCheckNPMStagedExecutionSupportBlocksSingleTarballWithoutSelectedVersion(t *testing.T) {
+	findings := CheckNPMStagedExecutionSupport(CommandAnalysis{
+		Manager: "npm",
+		Action:  "install",
+		PackageSpecs: []PackageSpec{{
+			Raw:  "example",
+			Name: "example",
+		}},
+	}, VersionInfo{
+		Selected: RegistryVersion{Version: "1.0.0"},
+	}, []Artifact{{
+		Path:      "/tmp/stage/example-1.0.0.tgz",
+		Kind:      "tar",
+		Ecosystem: "npm",
+		Name:      "example",
+		Version:   "1.0.0",
+	}})
+
+	if firstFindingSeverity(findings, "npm_staged_dependency_install_unsupported") != "block" {
+		t.Fatalf("findings = %#v, want blocking unsupported staged dependency install", findings)
 	}
 }
 
@@ -294,27 +400,90 @@ func TestPreflightNPMCreateUsesMappedPackageForAdvisories(t *testing.T) {
 	}
 }
 
-func TestPreflightFollowsAdvisoryToOlderCleanVersionBeforeStaging(t *testing.T) {
+func TestPreflightNPMCreateBlocksStagedOneShotUntilExactByteExecution(t *testing.T) {
 	root := t.TempDir()
 	bin := t.TempDir()
+	top := makeTestNPMPackageTgz(t, "create-vite", "1.2.3", `{}`)
 	writeFakeTool(t, bin, "npm", `#!/bin/sh
-dest=""
-while [ "$#" -gt 0 ]; do
-  if [ "$1" = "--pack-destination" ]; then
-    dest="$2"
-    shift 2
-  else
-    shift
-  fi
-done
-mkdir -p "$dest/pkg/package"
-printf '{"name":"example","version":"2.4.7"}' > "$dest/pkg/package/package.json"
-tar -czf "$dest/example-2.4.7.tgz" -C "$dest/pkg" package
+if [ "$1" = "cache" ] && [ "$2" = "add" ]; then
+  exit 0
+fi
+cat > package-lock.json <<'JSON'
+{
+  "lockfileVersion": 3,
+  "packages": {
+    "": {"name": "stage"},
+    "node_modules/create-vite": {
+      "version": "1.2.3",
+      "resolved": "https://registry.npmjs.org/create-vite/-/create-vite-1.2.3.tgz",
+      "integrity": "`+testSRI("sha512", top)+`"
+    }
+  }
+}
+JSON
 `)
 	t.Setenv("PATH", bin+":/bin:/usr/bin")
 	t.Chdir(root)
 	now := time.Now().UTC()
-	withFakeDefaultHTTP(t, fmt.Sprintf(`{
+	withFakeNPMHTTP(t, map[string]string{"create-vite": fmt.Sprintf(`{
+		"dist-tags":{"latest":"1.2.3"},
+		"time":{
+			"created":"%s",
+			"modified":"%s",
+			"1.2.3":"%s"
+		}
+	}`, now.Add(-90*24*time.Hour).Format(time.RFC3339), now.Format(time.RFC3339), now.Add(-60*24*time.Hour).Format(time.RFC3339))}, map[string][]byte{
+		"/create-vite/-/create-vite-1.2.3.tgz": top,
+	})
+	withFakeOSV(t, `{"vulns":[]}`)
+	store := NewStore(pathsFromRoot(filepath.Join(root, ".lsec")))
+	if err := store.Init(); err != nil {
+		t.Fatal(err)
+	}
+
+	report, err := preflight([]string{"npm", "create", "vite@1.2.3"}, pathsFromRoot(filepath.Join(root, ".lsec")), store)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if hasFinding(report.Findings, "npm_staged_execution_unsupported") {
+		t.Fatalf("findings = %#v, did not expect npm_staged_execution_unsupported after one-shot promotion", report.Findings)
+	}
+	if report.Decision.Verdict == VerdictBlock {
+		t.Fatalf("verdict = %q, want non-block for promotable one-shot create; report = %#v", report.Decision.Verdict, report)
+	}
+	if len(report.Artifacts) != 1 || !hasArtifact(report.Artifacts, "create-vite", "1.2.3") {
+		t.Fatalf("artifacts = %#v, want staged create-vite tarball", report.Artifacts)
+	}
+	rewritten := rewriteCommandForSelectedVersion([]string{"npm", "create", "vite@1.2.3"}, report)
+	if !stringSliceContains(rewritten, "--offline") || !stringSliceContains(rewritten, "--cache") {
+		t.Fatalf("rewritten = %#v, want offline cache promotion for create", rewritten)
+	}
+}
+
+func TestPreflightFollowsAdvisoryToOlderCleanVersionBeforeStaging(t *testing.T) {
+	root := t.TempDir()
+	bin := t.TempDir()
+	top := makeTestNPMPackageTgz(t, "example", "2.4.7", `{}`)
+	writeFakeTool(t, bin, "npm", `#!/bin/sh
+cat > package-lock.json <<'JSON'
+{
+  "lockfileVersion": 3,
+  "packages": {
+    "": {"name": "stage"},
+    "node_modules/example": {
+      "version": "2.4.7",
+      "resolved": "https://registry.npmjs.org/example/-/example-2.4.7.tgz",
+      "integrity": "`+testSRI("sha512", top)+`"
+    }
+  }
+}
+JSON
+`)
+	t.Setenv("PATH", bin+":/bin:/usr/bin")
+	t.Chdir(root)
+	now := time.Now().UTC()
+	withFakeNPMHTTP(t, map[string]string{"example": fmt.Sprintf(`{
 		"dist-tags":{"latest":"2.4.9"},
 		"time":{
 			"created":"%s",
@@ -323,7 +492,9 @@ tar -czf "$dest/example-2.4.7.tgz" -C "$dest/pkg" package
 			"2.4.8":"%s",
 			"2.4.7":"%s"
 		}
-	}`, now.Add(-90*24*time.Hour).Format(time.RFC3339), now.Format(time.RFC3339), now.Add(-3*time.Hour).Format(time.RFC3339), now.Add(-19*24*time.Hour).Format(time.RFC3339), now.Add(-60*24*time.Hour).Format(time.RFC3339)))
+	}`, now.Add(-90*24*time.Hour).Format(time.RFC3339), now.Format(time.RFC3339), now.Add(-3*time.Hour).Format(time.RFC3339), now.Add(-19*24*time.Hour).Format(time.RFC3339), now.Add(-60*24*time.Hour).Format(time.RFC3339))}, map[string][]byte{
+		"/example/-/example-2.4.7.tgz": top,
+	})
 	withFakeOSVByVersion(t, map[string]string{
 		"2.4.8": `{"vulns":[{"id":"GHSA-bad","summary":"bad","database_specific":{"severity":"CRITICAL"}}]}`,
 		"2.4.7": `{"vulns":[]}`,
@@ -352,31 +523,42 @@ tar -czf "$dest/example-2.4.7.tgz" -C "$dest/pkg" package
 func TestPreflightChecksStagedDependencyAdvisoriesAfterTopLevelFollow(t *testing.T) {
 	root := t.TempDir()
 	bin := t.TempDir()
+	top := makeTestNPMPackageTgz(t, "example", "2.4.7", `{"dep-pkg":"1.2.3"}`)
+	dep := makeTestNPMPackageTgz(t, "dep-pkg", "1.2.3", `{}`)
 	writeFakeTool(t, bin, "npm", `#!/bin/sh
-dest=""
-while [ "$#" -gt 0 ]; do
-  if [ "$1" = "--pack-destination" ]; then
-    dest="$2"
-    shift 2
-  else
-    shift
-  fi
-done
-mkdir -p "$dest/pkg/package"
-printf '{"name":"example","version":"2.4.7","dependencies":{"dep-pkg":"1.2.3"}}' > "$dest/pkg/package/package.json"
-tar -czf "$dest/example-2.4.7.tgz" -C "$dest/pkg" package
+cat > package-lock.json <<'JSON'
+{
+  "lockfileVersion": 3,
+  "packages": {
+    "": {"name": "stage"},
+    "node_modules/example": {
+      "version": "2.4.7",
+      "resolved": "https://registry.npmjs.org/example/-/example-2.4.7.tgz",
+      "integrity": "`+testSRI("sha512", top)+`"
+    },
+    "node_modules/dep-pkg": {
+      "version": "1.2.3",
+      "resolved": "https://registry.npmjs.org/dep-pkg/-/dep-pkg-1.2.3.tgz",
+      "integrity": "`+testSRI("sha512", dep)+`"
+    }
+  }
+}
+JSON
 `)
 	t.Setenv("PATH", bin+":/bin:/usr/bin")
 	t.Chdir(root)
 	now := time.Now().UTC()
-	withFakeDefaultHTTP(t, fmt.Sprintf(`{
+	withFakeNPMHTTP(t, map[string]string{"example": fmt.Sprintf(`{
 		"dist-tags":{"latest":"2.4.7"},
 		"time":{
 			"created":"%s",
 			"modified":"%s",
 			"2.4.7":"%s"
 		}
-	}`, now.Add(-90*24*time.Hour).Format(time.RFC3339), now.Format(time.RFC3339), now.Add(-60*24*time.Hour).Format(time.RFC3339)))
+	}`, now.Add(-90*24*time.Hour).Format(time.RFC3339), now.Format(time.RFC3339), now.Add(-60*24*time.Hour).Format(time.RFC3339))}, map[string][]byte{
+		"/example/-/example-2.4.7.tgz": top,
+		"/dep-pkg/-/dep-pkg-1.2.3.tgz": dep,
+	})
 	withFakeOSVByVersion(t, map[string]string{
 		"1.2.3": `{"vulns":[{"id":"GHSA-dep","summary":"bad dep","database_specific":{"severity":"CRITICAL"}}]}`,
 	})
@@ -635,34 +817,48 @@ cp `+shellQuote(depWheel)+` "$dest/"
 	}
 }
 
-func TestPreflightBlocksStagedPackageWithUnexpandedDependencies(t *testing.T) {
+func TestPreflightNPMInstallPromotesMultipleStagedTarballsViaOfflineCache(t *testing.T) {
 	root := t.TempDir()
 	bin := t.TempDir()
+	top := makeTestNPMPackageTgz(t, "example", "2.4.7", `{"dep-pkg":"2.4.7"}`)
+	dep := makeTestNPMPackageTgz(t, "dep-pkg", "2.4.7", `{}`)
 	writeFakeTool(t, bin, "npm", `#!/bin/sh
-dest=""
-while [ "$#" -gt 0 ]; do
-  if [ "$1" = "--pack-destination" ]; then
-    dest="$2"
-    shift 2
-  else
-    shift
-  fi
-done
-mkdir -p "$dest/pkg/package"
-printf '{"name":"example","version":"2.4.7","dependencies":{"dep-pkg":"1.2.3"}}' > "$dest/pkg/package/package.json"
-tar -czf "$dest/example-2.4.7.tgz" -C "$dest/pkg" package
+if [ "$1" = "cache" ] && [ "$2" = "add" ]; then
+  exit 0
+fi
+cat > package-lock.json <<'JSON'
+{
+  "lockfileVersion": 3,
+  "packages": {
+    "": {"name": "stage"},
+    "node_modules/example": {
+      "version": "2.4.7",
+      "resolved": "https://registry.npmjs.org/example/-/example-2.4.7.tgz",
+      "integrity": "`+testSRI("sha512", top)+`"
+    },
+    "node_modules/example/node_modules/dep-pkg": {
+      "version": "2.4.7",
+      "resolved": "https://registry.npmjs.org/dep-pkg/-/dep-pkg-2.4.7.tgz",
+      "integrity": "`+testSRI("sha512", dep)+`"
+    }
+  }
+}
+JSON
 `)
 	t.Setenv("PATH", bin+":/bin:/usr/bin")
 	t.Chdir(root)
 	now := time.Now().UTC()
-	withFakeDefaultHTTP(t, fmt.Sprintf(`{
+	withFakeNPMHTTP(t, map[string]string{"example": fmt.Sprintf(`{
 		"dist-tags":{"latest":"2.4.7"},
 		"time":{
 			"created":"%s",
 			"modified":"%s",
 			"2.4.7":"%s"
 		}
-	}`, now.Add(-90*24*time.Hour).Format(time.RFC3339), now.Format(time.RFC3339), now.Add(-60*24*time.Hour).Format(time.RFC3339)))
+	}`, now.Add(-90*24*time.Hour).Format(time.RFC3339), now.Format(time.RFC3339), now.Add(-60*24*time.Hour).Format(time.RFC3339))}, map[string][]byte{
+		"/example/-/example-2.4.7.tgz": top,
+		"/dep-pkg/-/dep-pkg-2.4.7.tgz": dep,
+	})
 	withFakeOSV(t, `{"vulns":[]}`)
 	store := NewStore(pathsFromRoot(filepath.Join(root, ".lsec")))
 	if err := store.Init(); err != nil {
@@ -674,11 +870,21 @@ tar -czf "$dest/example-2.4.7.tgz" -C "$dest/pkg" package
 		t.Fatal(err)
 	}
 
-	if report.Decision.Verdict != VerdictBlock {
-		t.Fatalf("verdict = %q, want block because dependencies are not staged recursively; report = %#v", report.Decision.Verdict, report)
+	if hasFinding(report.Findings, "npm_staged_dependency_install_unsupported") {
+		t.Fatalf("findings = %#v, did not expect npm_staged_dependency_install_unsupported after offline cache promotion", report.Findings)
 	}
-	if firstFindingSeverity(report.Findings, "dependency_metadata_present") != "block" {
-		t.Fatalf("findings = %#v, want blocking dependency metadata finding", report.Findings)
+	if report.Decision.Verdict == VerdictBlock {
+		t.Fatalf("verdict = %q, want non-block after exact-byte npm dependency promotion; report = %#v", report.Decision.Verdict, report)
+	}
+	if len(report.Artifacts) != 2 || !hasArtifact(report.Artifacts, "example", "2.4.7") || !hasArtifact(report.Artifacts, "dep-pkg", "2.4.7") {
+		t.Fatalf("artifacts = %#v, want staged top-level and dependency tarballs", report.Artifacts)
+	}
+	rewritten := rewriteCommandForSelectedVersion([]string{"npm", "install", "example"}, report)
+	if !stringSliceContains(rewritten, "--offline") || !stringSliceContains(rewritten, "--cache") {
+		t.Fatalf("rewritten = %#v, want offline cache promotion flags", rewritten)
+	}
+	if stringSliceContains(rewritten, report.Artifacts[1].Path) {
+		t.Fatalf("rewritten = %#v, must not install dependency tarball as a direct root", rewritten)
 	}
 }
 
@@ -800,7 +1006,8 @@ func writeNpmLockfile(t *testing.T, root string) {
 			"": {"name": "app"},
 			"node_modules/left-pad": {
 				"version": "1.3.0",
-				"integrity": "sha512-test"
+				"integrity": "sha512-test",
+				"resolved": "https://registry.npmjs.org/left-pad/-/left-pad-1.3.0.tgz"
 			}
 		}
 	}`)
@@ -1457,6 +1664,26 @@ func TestRunHistoryLimitShowsNewestEventsFirst(t *testing.T) {
 	}
 }
 
+func TestUsageListsRemoteSandboxCommands(t *testing.T) {
+	var stdout strings.Builder
+	err := Run(nil, strings.NewReader(""), &stdout, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := stdout.String()
+	for _, want := range []string{
+		"lsec remote-sandbox prepare <run_id> [--out PATH]",
+		"lsec remote-sandbox submit-fake <run_id> [--result PATH]",
+		"lsec remote-sandbox submit <run_id> --result PATH",
+		"lsec remote-sandbox run-local <run_id> [--result PATH]",
+		"lsec macos-detonation prepare-fixture <run_id> [--out PATH]",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("usage output = %q, want %q", out, want)
+		}
+	}
+}
+
 func TestRunPackagesListsArtifactsWithApprovalStatus(t *testing.T) {
 	root := t.TempDir()
 	t.Setenv("LSEC_HOME", filepath.Join(root, ".local-sec"))
@@ -1670,6 +1897,51 @@ func TestRunStatusCountsUniqueRunsAcrossEventKinds(t *testing.T) {
 	}
 	if !strings.Contains(out, "verdict[prompt]: 1") {
 		t.Fatalf("status output = %q, want one prompt verdict", out)
+	}
+}
+
+func TestRunStatusKeepsReportVerdictAfterRemoteSandboxEvent(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("LSEC_HOME", filepath.Join(root, ".local-sec"))
+	paths, err := DefaultPaths()
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := NewStore(paths)
+	if err := store.Init(); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.AppendEvent("preflight", RunReport{
+		RunID:    "run-status-remote",
+		Decision: Decision{Verdict: VerdictPrompt, Lane: LaneRisky},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.AppendEvent("remote_sandbox", remoteSandboxEvent{
+		Schema:       remoteSandboxResultSchema,
+		Version:      1,
+		RunID:        "run-status-remote",
+		Status:       RemoteSandboxStatusComplete,
+		FindingCount: 0,
+		CreatedAt:    time.Date(2026, 7, 2, 1, 2, 3, 0, time.UTC),
+		Redacted:     true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout strings.Builder
+	if err := Run([]string{"status"}, strings.NewReader(""), &stdout, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	out := stdout.String()
+	for _, want := range []string{
+		"runs: 1",
+		"verdict[prompt]: 1",
+		"lane[risky]: 1",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("status output = %q, want %q", out, want)
+		}
 	}
 }
 

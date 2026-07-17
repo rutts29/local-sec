@@ -84,9 +84,13 @@ type Decision struct {
 }
 
 type LLMReview struct {
-	Verdict    Verdict  `json:"verdict"`
-	Confidence string   `json:"confidence"`
-	Reasons    []string `json:"reasons"`
+	Schema         string   `json:"schema"`
+	Version        int      `json:"version"`
+	EvidenceSHA256 string   `json:"evidence_sha256"`
+	Verdict        Verdict  `json:"verdict"`
+	Confidence     string   `json:"confidence"`
+	Reasons        []string `json:"reasons"`
+	Signals        []string `json:"signals"`
 }
 
 type RegistryVersion struct {
@@ -121,6 +125,7 @@ type RunReport struct {
 	Artifacts  []Artifact      `json:"artifacts"`
 	Findings   []Finding       `json:"findings"`
 	Advisories []Advisory      `json:"advisories"`
+	Sandbox    SandboxEvidence `json:"sandbox,omitempty"`
 	Decision   Decision        `json:"decision"`
 	CreatedAt  time.Time       `json:"created_at"`
 }

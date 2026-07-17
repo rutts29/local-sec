@@ -1,0 +1,147 @@
+{
+  "name": "static-scanner",
+  "version": "0.1.0",
+  "patterns": {
+    "credential": [
+      ".ssh",
+      "id_rsa",
+      ".aws",
+      ".gcloud",
+      ".azure",
+      ".kube",
+      ".npmrc",
+      ".pypirc",
+      ".netrc",
+      ".env",
+      ".huggingface",
+      "OPENAI_API_KEY",
+      "ANTHROPIC_API_KEY",
+      "GITHUB_TOKEN",
+      "AWS_SECRET_ACCESS_KEY",
+      "HF_TOKEN",
+      "HUGGING_FACE_HUB_TOKEN"
+    ],
+    "network": [
+      "requests.post",
+      "requests.get",
+      "requests",
+      "urllib.request",
+      "urllib",
+      "http.request",
+      "https.request",
+      "fetch(",
+      "fetch",
+      "axios.",
+      "net.connect",
+      "socket.",
+      "socket",
+      "dns.",
+      "dns",
+      "curl ",
+      "wget "
+    ],
+    "execution": [
+      "child_process",
+      "subprocess",
+      "os.system",
+      "exec(",
+      "eval(",
+      "__import__",
+      "spawn("
+    ],
+    "obfuscation": [
+      "base64",
+      "atob(",
+      "atob",
+      "zlib",
+      "marshal.loads",
+      "fromCharCode",
+      "\\x",
+      "obfuscator.io"
+    ],
+    "persistence": [
+      "LaunchAgents",
+      "Library/LaunchAgents",
+      "LaunchDaemons",
+      "Library/LaunchDaemons",
+      "launchctl",
+      "osascript",
+      "systemd/user",
+      "crontab",
+      ".zshrc",
+      ".bashrc",
+      ".profile",
+      "tasks.json",
+      "SessionStart",
+      ".claude",
+      ".claude/settings.json",
+      ".codex",
+      ".codex/config.toml",
+      ".cursor",
+      ".continue",
+      ".vscode/tasks.json"
+    ],
+    "npm_lifecycle_scripts": [
+      "preinstall",
+      "install",
+      "postinstall",
+      "prepare"
+    ],
+    "source_file_names": [
+      "install",
+      "installer",
+      "setup",
+      "bootstrap",
+      "downloaded-script",
+      "setup.py",
+      "sitecustomize.py",
+      "usercustomize.py",
+      "pyproject.toml"
+    ],
+    "source_file_suffixes": [
+      ".pth"
+    ],
+    "source_extensions": [
+      ".js",
+      ".mjs",
+      ".cjs",
+      ".py",
+      ".toml"
+    ]
+  },
+  "findings": {
+    "npm_lifecycle_script": {
+      "severity": "prompt",
+      "message": "npm lifecycle script requires review"
+    },
+    "persistence_write_pattern": {
+      "severity": "block",
+      "message": "code references persistence locations or startup hooks"
+    },
+    "credential_exfil_pattern": {
+      "severity": "block",
+      "source_message": "code combines credential path access with network or process execution",
+      "package_message": "install script combines credential access with network or execution behavior"
+    },
+    "credential_path_reference": {
+      "severity": "prompt",
+      "message": "code references credential paths or secret-like environment variables"
+    },
+    "obfuscated_network_payload": {
+      "severity": "block",
+      "message": "code combines obfuscation with network behavior"
+    },
+    "obfuscation_pattern": {
+      "severity": "prompt",
+      "message": "code contains obfuscation patterns"
+    },
+    "process_execution": {
+      "severity": "prompt",
+      "message": "code can execute subprocesses or dynamic code"
+    },
+    "network_api": {
+      "severity": "prompt",
+      "message": "code contains network APIs"
+    }
+  }
+}

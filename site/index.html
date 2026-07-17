@@ -1,0 +1,642 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>local-sec — every install runs the gauntlet</title>
+<meta name="description" content="local-sec stages, scans, and advisory-checks every npm, pip, uv, and curl install before it touches your machine. Local-first, fail-closed, single binary, zero dependencies." />
+<meta name="color-scheme" content="dark" />
+<meta name="theme-color" content="#07080a" />
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23ff7a1a' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M12 2 4 5v6c0 5 3.4 8.5 8 11 4.6-2.5 8-6 8-11V5l-8-3Z'/%3E%3Cpath d='m8.5 12 2.5 2.5 4.5-4.5'/%3E%3C/svg%3E" />
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,700;12..96,800&family=Hanken+Grotesk:wght@400;500;600;700&family=Instrument+Serif:ital@0;1&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<meta property="og:title" content="local-sec — every install runs the gauntlet" />
+<meta property="og:description" content="A local-first supply-chain guard. Stages, scans, and advisory-checks every npm, pip, uv, and curl install — fail-closed, privacy-first." />
+<meta property="og:type" content="website" />
+<style>
+  :root {
+    --bg: #07080a;
+    --bg-2: #0a0c0f;
+    --surface: rgba(255,255,255,0.035);
+    --surface-2: rgba(255,255,255,0.055);
+    --line: rgba(255,255,255,0.08);
+    --line-2: rgba(255,255,255,0.13);
+    --text: #f3f4f5;
+    --muted: #9aa1ac;
+    --faint: #5f6772;
+    --sig: #ff7a1a;
+    --sig-2: #ffa45c;
+    --sig-d: rgba(255,122,26,0.16);
+    --trusted: #3ecf8e;
+    --risky: #f5b342;
+    --block: #ff5d5d;
+    --radius: 14px;
+    --radius-lg: 22px;
+    --maxw: 1180px;
+    --display: "Bricolage Grotesque", "Hanken Grotesk", system-ui, sans-serif;
+    --body: "Hanken Grotesk", system-ui, -apple-system, "Segoe UI", sans-serif;
+    --serif: "Instrument Serif", Georgia, "Times New Roman", serif;
+    --mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+
+  *, *::before, *::after { box-sizing: border-box; }
+  html { scroll-behavior: smooth; scroll-padding-top: 96px; }
+  body {
+    margin: 0;
+    font-family: var(--body);
+    color: var(--text);
+    background: var(--bg);
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+    overflow-x: hidden;
+  }
+  a { color: inherit; text-decoration: none; }
+  ::selection { background: rgba(255,122,26,0.32); color: #fff; }
+  :focus-visible { outline: 2px solid var(--sig); outline-offset: 3px; border-radius: 4px; }
+  code { font-family: var(--mono); font-size: 0.88em; color: var(--sig-2); }
+
+  /* ---------- atmosphere: focal glow + grid + vignette ---------- */
+  .atmos { position: fixed; inset: 0; z-index: -2; pointer-events: none; }
+  .atmos .glow {
+    position: absolute; top: -18vh; right: -10vw;
+    width: 70vw; height: 70vw; max-width: 1100px; max-height: 1100px;
+    background: radial-gradient(circle at 50% 50%, rgba(255,122,26,0.20), rgba(255,122,26,0.05) 38%, transparent 60%);
+    filter: blur(20px);
+  }
+  .atmos .grid {
+    position: absolute; inset: 0;
+    background-image:
+      linear-gradient(rgba(255,255,255,0.022) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(255,255,255,0.022) 1px, transparent 1px);
+    background-size: 54px 54px;
+    mask-image: radial-gradient(ellipse 90% 70% at 70% 0%, #000 30%, transparent 85%);
+  }
+  .vignette {
+    position: fixed; inset: 0; z-index: -1; pointer-events: none;
+    background: radial-gradient(ellipse 120% 90% at 50% 30%, transparent 55%, rgba(0,0,0,0.55) 100%);
+  }
+  /* ---------- glass / panel material ---------- */
+  .glass {
+    position: relative;
+    background: linear-gradient(180deg, var(--surface-2), var(--surface));
+    -webkit-backdrop-filter: blur(16px) saturate(140%);
+    backdrop-filter: blur(16px) saturate(140%);
+    border: 1px solid var(--line);
+    border-radius: var(--radius-lg);
+    box-shadow: 0 20px 60px -28px rgba(0,0,0,0.8), inset 0 1px 0 rgba(255,255,255,0.16);
+  }
+  .glass.tight { border-radius: var(--radius); }
+  .sheen { overflow: hidden; }
+  .sheen::after {
+    content: ""; position: absolute; inset: 0; border-radius: inherit; pointer-events: none;
+    background: linear-gradient(120deg, transparent 32%, rgba(255,255,255,0.10) 47%, transparent 60%);
+    background-size: 240% 100%; background-position: 160% 0; opacity: 0; transition: opacity .45s ease;
+  }
+  .sheen:hover::after { opacity: 1; animation: sweep 1.5s ease; }
+  @keyframes sweep { to { background-position: -160% 0; } }
+
+  /* ---------- layout ---------- */
+  .wrap { max-width: var(--maxw); margin: 0 auto; padding: 0 24px; }
+
+  /* nav */
+  .bar { position: sticky; top: 16px; z-index: 60; padding: 0 24px; margin-top: 16px; }
+  .nav {
+    max-width: var(--maxw); margin: 0 auto; display: flex; align-items: center; gap: 16px;
+    padding: 9px 9px 9px 18px; border-radius: 999px;
+    background: rgba(10,12,15,0.55); border: 1px solid var(--line);
+    -webkit-backdrop-filter: blur(14px); backdrop-filter: blur(14px);
+    transition: background .3s, border-color .3s, box-shadow .3s;
+  }
+  .nav.scrolled { background: rgba(8,10,13,0.82); border-color: var(--line-2); box-shadow: 0 14px 40px -20px rgba(0,0,0,0.9); }
+  .brand { display: inline-flex; align-items: baseline; gap: 8px; font-family: var(--mono); }
+  .brand .ch { color: var(--sig); font-weight: 600; }
+  .brand .nm { color: var(--text); font-weight: 600; font-size: 1.02rem; letter-spacing: -0.01em; }
+  .brand .vr { color: var(--faint); font-size: 0.72rem; }
+  .nav-links { display: flex; gap: 2px; margin-left: auto; }
+  .nav-links a { color: var(--muted); font-size: 0.9rem; padding: 8px 13px; border-radius: 999px; transition: color .2s, background .2s; font-weight: 500; }
+  .nav-links a:hover { color: var(--text); background: rgba(255,255,255,0.06); }
+  .nav-cta {
+    display: inline-flex; align-items: center; gap: 7px; font-family: var(--mono); font-size: 0.84rem; font-weight: 500;
+    padding: 9px 14px; border-radius: 999px; color: var(--text); border: 1px solid var(--line-2); background: rgba(255,255,255,0.04);
+    transition: border-color .2s, background .2s, transform .15s;
+  }
+  .nav-cta:hover { border-color: var(--sig); color: var(--sig-2); transform: translateY(-1px); }
+
+  .btn { display: inline-flex; align-items: center; gap: 9px; font-weight: 600; font-size: 0.98rem; padding: 13px 20px; border-radius: 999px; cursor: pointer; transition: transform .15s, box-shadow .2s, background .2s, border-color .2s; white-space: nowrap; }
+  .btn-primary { color: #1b0d02; background: linear-gradient(180deg, var(--sig-2), var(--sig)); box-shadow: 0 10px 30px -10px rgba(255,122,26,0.6), inset 0 1px 0 rgba(255,255,255,0.45); }
+  .btn-primary:hover { transform: translateY(-2px); box-shadow: 0 16px 38px -10px rgba(255,122,26,0.8), inset 0 1px 0 rgba(255,255,255,0.5); }
+  .btn-ghost { color: var(--text); background: rgba(255,255,255,0.04); border: 1px solid var(--line-2); }
+  .btn-ghost:hover { border-color: var(--sig); color: var(--sig-2); transform: translateY(-2px); }
+  .btn .arr { font-family: var(--mono); }
+
+  /* hero */
+  .hero { padding: 72px 0 40px; position: relative; }
+  .hero-grid { display: grid; grid-template-columns: 1.05fr 0.95fr; gap: 56px; align-items: center; }
+  .kicker { display: inline-flex; align-items: center; gap: 10px; font-family: var(--mono); font-size: 0.78rem; color: var(--muted); letter-spacing: 0.02em; margin-bottom: 26px; }
+  .kicker .pulse { width: 8px; height: 8px; border-radius: 50%; background: var(--sig); box-shadow: 0 0 0 0 rgba(255,122,26,0.6); animation: pulse 2s infinite; }
+  .kicker .bar-sep { color: var(--faint); }
+  @keyframes pulse { 0% { box-shadow: 0 0 0 0 rgba(255,122,26,0.55); } 70% { box-shadow: 0 0 0 9px rgba(255,122,26,0); } 100% { box-shadow: 0 0 0 0 rgba(255,122,26,0); } }
+  h1.display {
+    font-family: var(--display); font-weight: 700; font-size: clamp(2.7rem, 6.4vw, 4.7rem);
+    line-height: 0.96; letter-spacing: -0.035em; margin: 0 0 22px;
+  }
+  h1.display em { font-family: var(--serif); font-style: italic; font-weight: 400; color: var(--sig); letter-spacing: -0.01em; padding-right: 0.04em; }
+  .lede { font-size: clamp(1.04rem, 1.6vw, 1.18rem); color: var(--muted); max-width: 46ch; margin: 0 0 30px; }
+  .cta-row { display: flex; flex-wrap: wrap; gap: 12px; margin-bottom: 34px; }
+  .stats { display: flex; gap: 30px; flex-wrap: wrap; }
+  .stat .n { font-family: var(--display); font-weight: 700; font-size: 1.7rem; color: var(--text); line-height: 1; }
+  .stat .n .u { font-family: var(--mono); font-size: 0.8rem; color: var(--faint); font-weight: 500; margin-left: 2px; }
+  .stat .l { font-family: var(--mono); font-size: 0.72rem; color: var(--faint); margin-top: 6px; letter-spacing: 0.02em; }
+
+  /* terminal focal */
+  .term-wrap { position: relative; }
+  .term-wrap::before {
+    content: ""; position: absolute; inset: -8% -6% -6% -6%; z-index: -1;
+    background: radial-gradient(ellipse 70% 70% at 60% 40%, rgba(255,122,26,0.22), transparent 65%);
+    filter: blur(14px);
+  }
+  .term { overflow: hidden; border: 1px solid var(--line-2); }
+  .term-bar { display: flex; align-items: center; gap: 9px; padding: 11px 15px; border-bottom: 1px solid var(--line); background: rgba(0,0,0,0.22); }
+  .lights { display: flex; gap: 7px; }
+  .lights i { width: 11px; height: 11px; border-radius: 50%; display: block; }
+  .lights .r { background: var(--block); } .lights .y { background: var(--risky); } .lights .g { background: var(--trusted); }
+  .term-title { margin-left: 6px; font-family: var(--mono); font-size: 0.74rem; color: var(--faint); }
+  .term-live { margin-left: auto; display: inline-flex; align-items: center; gap: 6px; font-family: var(--mono); font-size: 0.7rem; color: var(--sig-2); }
+  .term-live .d { width: 6px; height: 6px; border-radius: 50%; background: var(--sig); animation: pulse 1.6s infinite; }
+  .term-body { padding: 18px 18px 20px; font-family: var(--mono); font-size: 0.82rem; line-height: 1.85; min-height: 232px; }
+  .term-cmd { color: var(--text); margin-bottom: 12px; }
+  .term-cmd .p { color: var(--sig); }
+  .t-row { display: flex; gap: 12px; align-items: baseline; }
+  .t-row .lab { width: 76px; color: var(--faint); flex: none; }
+  .t-row .val { color: var(--text); flex: 1; }
+  .t-row .tag { color: var(--muted); font-size: 0.78rem; }
+  .t-row.ok .tag { color: var(--trusted); } .t-row.warn .tag { color: var(--risky); } .t-row.bad .tag { color: var(--block); }
+  .t-rule { border: 0; border-top: 1px dashed var(--line); margin: 12px 0 10px; }
+  .t-verdict { display: flex; align-items: baseline; gap: 12px; }
+  .t-verdict .vl { width: 76px; color: var(--faint); }
+  .t-verdict .vname { font-family: var(--display); font-weight: 800; font-size: 1.15rem; letter-spacing: 0.02em; }
+  .t-verdict.ok .vname { color: var(--trusted); } .t-verdict.warn .vname { color: var(--risky); } .t-verdict.bad .vname { color: var(--block); }
+  .t-verdict .vnote { color: var(--muted); font-size: 0.78rem; }
+  /* hud corner ticks */
+  .term-wrap .tick { position: absolute; width: 14px; height: 14px; border: 1.5px solid var(--sig); opacity: 0.5; }
+  .term-wrap .t1 { top: -7px; left: -7px; border-right: 0; border-bottom: 0; }
+  .term-wrap .t2 { top: -7px; right: -7px; border-left: 0; border-bottom: 0; }
+  .term-wrap .t3 { bottom: -7px; left: -7px; border-right: 0; border-top: 0; }
+  .term-wrap .t4 { bottom: -7px; right: -7px; border-left: 0; border-top: 0; }
+
+  /* ticker */
+  .ticker-wrap { overflow: hidden; padding: 14px 0; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line);
+    -webkit-mask-image: linear-gradient(90deg, transparent, #000 6%, #000 94%, transparent);
+    mask-image: linear-gradient(90deg, transparent, #000 6%, #000 94%, transparent); }
+  .ticker { display: flex; gap: 38px; width: max-content; white-space: nowrap; font-family: var(--mono); font-size: 0.8rem; color: var(--muted); animation: tick 34s linear infinite; }
+  .ticker:hover { animation-play-state: paused; }
+  .ticker .ti { display: inline-flex; align-items: center; gap: 9px; }
+  .ticker .ti i { width: 7px; height: 7px; border-radius: 50%; }
+  .ticker .ti em { font-style: normal; font-weight: 500; }
+  .ticker .ok i { background: var(--trusted); } .ticker .ok em { color: var(--trusted); }
+  .ticker .warn i { background: var(--risky); } .ticker .warn em { color: var(--risky); }
+  .ticker .bad i { background: var(--block); } .ticker .bad em { color: var(--block); }
+  @keyframes tick { to { transform: translateX(-50%); } }
+
+  /* sections */
+  section.block { padding: 86px 0; position: relative; }
+  .sec-head { max-width: 62ch; margin-bottom: 44px; }
+  .sec-kick { font-family: var(--mono); font-size: 0.76rem; color: var(--sig); letter-spacing: 0.08em; text-transform: uppercase; display: inline-flex; align-items: center; gap: 10px; }
+  .sec-kick::before { content: ""; width: 22px; height: 1px; background: var(--sig); display: inline-block; opacity: 0.6; }
+  h2.sec-title { font-family: var(--display); font-weight: 700; font-size: clamp(1.9rem, 3.8vw, 2.9rem); line-height: 1.04; letter-spacing: -0.03em; margin: 14px 0 0; }
+  .sec-sub { color: var(--muted); font-size: 1.06rem; margin-top: 14px; max-width: 56ch; }
+
+  /* guarded band */
+  .guarded { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+  .guarded .lbl { color: var(--faint); margin-right: 6px; font-family: var(--mono); font-size: 0.74rem; text-transform: uppercase; letter-spacing: 0.1em; }
+  .guarded .chip { font-family: var(--mono); font-size: 0.86rem; color: var(--text); padding: 7px 14px; border-radius: 999px; background: var(--surface); border: 1px solid var(--line); transition: border-color .2s, color .2s; }
+  .guarded .chip:hover { border-color: var(--sig); color: var(--sig-2); }
+
+  /* bento feature grid */
+  .bento { display: grid; grid-template-columns: repeat(3, 1fr); gap: 18px; }
+  .card { padding: 30px; transition: transform .25s ease, border-color .25s; display: flex; flex-direction: column; }
+  .card:hover { transform: translateY(-3px); border-color: var(--line-2); }
+  .card .ic { width: 36px; height: 36px; border-radius: 10px; display: grid; place-items: center; background: var(--sig-d); color: var(--sig-2); margin-bottom: 18px; }
+  .card h3 { font-family: var(--display); font-weight: 700; font-size: 1.2rem; letter-spacing: -0.02em; margin: 0 0 9px; }
+  .card p { color: var(--muted); margin: 0; font-size: 0.96rem; }
+  /* featured card with version diagram */
+  .feat-ver .vd { margin-top: auto; padding-top: 18px; }
+  .feat-ver .vd-row { display: flex; align-items: center; gap: 12px; font-family: var(--mono); font-size: 0.8rem; padding: 7px 0; border-top: 1px solid var(--line); }
+  .feat-ver .vd-row:first-of-type { border-top: 0; }
+  .feat-ver .vd-tag { width: 64px; color: var(--faint); flex: none; }
+  .feat-ver .vd-bar { flex: 1; height: 6px; border-radius: 99px; background: rgba(255,255,255,0.06); position: relative; overflow: hidden; }
+  .feat-ver .vd-bar i { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 99px; }
+  .feat-ver .vd-val { width: 96px; text-align: right; color: var(--text); }
+  .feat-ver .latest .vd-tag { color: var(--risky); } .feat-ver .latest .vd-bar i { width: 8%; background: var(--risky); } .feat-ver .latest .vd-val { color: var(--risky); }
+  .feat-ver .mature .vd-tag { color: var(--trusted); } .feat-ver .mature .vd-bar i { width: 64%; background: var(--trusted); } .feat-ver .mature .vd-val { color: var(--trusted); }
+
+  /* lanes */
+  .lanes { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; }
+  .lane { padding: 28px 26px; }
+  .lane .pill { font-family: var(--mono); font-size: 0.74rem; padding: 5px 11px; border-radius: 999px; display: inline-flex; align-items: center; gap: 7px; }
+  .lane .pill i { width: 7px; height: 7px; border-radius: 50%; }
+  .lane.trusted .pill { color: var(--trusted); background: rgba(62,207,142,0.10); border: 1px solid rgba(62,207,142,0.3); } .lane.trusted .pill i { background: var(--trusted); }
+  .lane.risky .pill { color: var(--risky); background: rgba(245,179,66,0.10); border: 1px solid rgba(245,179,66,0.3); } .lane.risky .pill i { background: var(--risky); }
+  .lane.block .pill { color: var(--block); background: rgba(255,93,93,0.10); border: 1px solid rgba(255,93,93,0.3); } .lane.block .pill i { background: var(--block); }
+  .lane h3 { font-family: var(--display); font-weight: 700; font-size: 1.25rem; margin: 16px 0 8px; letter-spacing: -0.02em; }
+  .lane p { color: var(--muted); margin: 0; font-size: 0.94rem; }
+  .pipe { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-top: 28px; font-family: var(--mono); font-size: 0.8rem; }
+  .pipe .step { padding: 8px 13px; border-radius: 9px; background: var(--surface); border: 1px solid var(--line); color: var(--text); }
+  .pipe .arr { color: var(--faint); }
+
+  /* safety */
+  .safety { display: grid; grid-template-columns: repeat(2, 1fr); gap: 14px; }
+  .safety .card { flex-direction: row; gap: 16px; align-items: flex-start; }
+  .safety .card .ic { margin-bottom: 0; flex: none; }
+  .safety .card h3 { font-size: 1.04rem; }
+  .safety .card .txt p { margin-top: 4px; }
+
+  /* roadmap */
+  .phases { display: flex; flex-direction: column; gap: 10px; }
+  .phase { display: flex; align-items: center; gap: 18px; padding: 18px 24px; }
+  .phase .st { font-family: var(--mono); font-size: 0.8rem; width: 28px; height: 28px; border-radius: 50%; display: grid; place-items: center; flex: none; }
+  .phase.done .st { background: rgba(62,207,142,0.14); color: var(--trusted); border: 1px solid rgba(62,207,142,0.35); }
+  .phase.now .st { background: var(--sig-d); color: var(--sig); border: 1px solid rgba(255,122,26,0.4); }
+  .phase.next .st { background: var(--surface); color: var(--faint); border: 1px solid var(--line); }
+  .phase h3 { font-size: 1rem; margin: 0; font-family: var(--display); font-weight: 700; }
+  .phase p { color: var(--muted); margin: 3px 0 0; font-size: 0.9rem; }
+  .phase .state { margin-left: auto; font-family: var(--mono); font-size: 0.74rem; color: var(--faint); white-space: nowrap; }
+
+  /* cta band */
+  .band { padding: 52px 40px; text-align: center; position: relative; overflow: hidden; }
+  .band::before { content: ""; position: absolute; inset: 0; z-index: -1; background: radial-gradient(ellipse 60% 120% at 50% 0%, rgba(255,122,26,0.16), transparent 60%); }
+  .band h2 { font-family: var(--display); font-weight: 700; font-size: clamp(1.8rem, 3.6vw, 2.6rem); letter-spacing: -0.03em; margin: 0 0 12px; }
+  .band p { color: var(--muted); margin: 0 0 26px; }
+  .band .install { margin-top: 22px; display: inline-flex; align-items: center; gap: 10px; font-family: var(--mono); font-size: 0.86rem; color: var(--muted); padding: 11px 16px; border-radius: 11px; background: rgba(0,0,0,0.35); border: 1px solid var(--line); }
+  .band .install .p { color: var(--sig); } .band .install b { color: var(--text); font-weight: 600; }
+
+  footer { padding: 56px 0 80px; }
+  .foot { display: flex; flex-wrap: wrap; gap: 18px; justify-content: space-between; align-items: center; }
+  .foot-links { display: flex; gap: 22px; flex-wrap: wrap; }
+  .foot-links a { color: var(--muted); font-size: 0.9rem; transition: color .2s; }
+  .foot-links a:hover { color: var(--sig-2); }
+  .foot-meta { font-family: var(--mono); color: var(--faint); font-size: 0.78rem; }
+
+  /* github corner */
+  .gh-corner { position: fixed; right: 20px; bottom: 20px; z-index: 70; width: 46px; height: 46px; border-radius: 50%; padding: 0; display: grid; place-items: center; color: var(--text); transition: transform .18s, color .2s, border-color .2s; }
+  .gh-corner svg { width: 21px; height: 21px; display: block; }
+  .gh-corner:hover { color: var(--sig-2); border-color: var(--sig); transform: translateY(-2px); }
+
+  /* reveal motion */
+  .reveal { opacity: 0; transform: translateY(20px); transition: opacity .8s cubic-bezier(.2,.7,.2,1), transform .8s cubic-bezier(.2,.7,.2,1); }
+  .reveal.in { opacity: 1; transform: none; }
+  .reveal.d1 { transition-delay: .08s; } .reveal.d2 { transition-delay: .16s; } .reveal.d3 { transition-delay: .24s; } .reveal.d4 { transition-delay: .32s; } .reveal.d5 { transition-delay: .4s; }
+
+  /* responsive */
+  @media (max-width: 980px) {
+    .hero-grid { grid-template-columns: 1fr; gap: 44px; }
+    .hero { padding: 56px 0 36px; }
+    .bento { grid-template-columns: repeat(2, 1fr); }
+  }
+  @media (max-width: 760px) {
+    .nav-links { display: none; }
+    .lanes, .safety { grid-template-columns: 1fr; }
+    section.block { padding: 64px 0; }
+  }
+  @media (max-width: 520px) {
+    .brand .vr { display: none; }
+    .nav { padding: 8px 8px 8px 14px; }
+    .stats { gap: 22px; }
+    .term-body { font-size: 0.76rem; padding: 15px; min-height: 200px; }
+    .t-row .lab, .t-verdict .vl { width: 64px; }
+    .phase .state { display: none; }
+    .band { padding: 38px 22px; }
+    .gh-corner { width: 42px; height: 42px; right: 14px; bottom: 14px; }
+    .bento { grid-template-columns: 1fr; }
+  }
+
+  /* fallback + reduced motion */
+  @supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+    .glass, .nav { background: rgba(12,14,18,0.9); }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    html { scroll-behavior: auto; }
+    .reveal { opacity: 1; transform: none; transition: none; }
+    .ticker { animation: none; }
+    .kicker .pulse, .term-live .d { animation: none; }
+    .sheen::after { display: none; }
+  }
+</style>
+</head>
+<body>
+  <div class="atmos" aria-hidden="true"><div class="glow"></div><div class="grid"></div></div>
+  <div class="vignette" aria-hidden="true"></div>
+
+  <nav class="bar">
+    <div class="nav" id="nav">
+      <a class="brand" href="#top" aria-label="local-sec home">
+        <span class="ch">❯</span><span class="nm">local-sec</span><span class="vr">v0.1.0</span>
+      </a>
+      <div class="nav-links">
+        <a href="#how">How it works</a>
+        <a href="#features">Features</a>
+        <a href="#safety">Safety</a>
+        <a href="#roadmap">Roadmap</a>
+      </div>
+      <a class="nav-cta" href="#get">Get started <span class="arr">→</span></a>
+    </div>
+  </nav>
+
+  <header class="hero" id="top">
+    <div class="wrap">
+      <div class="hero-grid">
+        <div class="hero-text">
+          <div class="kicker reveal"><span class="pulse"></span> SUPPLY-CHAIN GUARD <span class="bar-sep">/</span> LOCAL-FIRST</div>
+          <h1 class="display reveal d1">Every install runs the <em>gauntlet</em> before it reaches you.</h1>
+          <p class="lede reveal d2">local-sec stages, statically scans, and advisory-checks each <code>npm</code>, <code>pip</code>, <code>uv</code>, and <code>curl</code> install — then decides: trusted, risky, or blocked. Fail-closed, privacy-first, one binary with zero third-party dependencies.</p>
+          <div class="cta-row reveal d3">
+            <a class="btn btn-primary" href="#get">Get started</a>
+            <a class="btn btn-ghost" href="https://github.com/rutts29/local-sec" target="_blank" rel="noopener">View on GitHub <span class="arr">↗</span></a>
+          </div>
+          <div class="stats reveal d4">
+            <div class="stat"><div class="n">9<span class="u">cmds</span></div><div class="l">install commands guarded</div></div>
+            <div class="stat"><div class="n">7<span class="u">day</span></div><div class="l">fresh-package maturity window</div></div>
+            <div class="stat"><div class="n">0<span class="u">deps</span></div><div class="l">third-party go modules</div></div>
+          </div>
+        </div>
+
+        <div class="term-wrap reveal d3">
+          <span class="tick t1"></span><span class="tick t2"></span><span class="tick t3"></span><span class="tick t4"></span>
+          <div class="term glass">
+            <div class="term-bar">
+              <span class="lights" aria-hidden="true"><i class="r"></i><i class="y"></i><i class="g"></i></span>
+              <span class="term-title">lsec — guard</span>
+              <span class="term-live"><span class="d"></span> scanning</span>
+            </div>
+            <div class="term-body" id="term"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </header>
+
+  <div class="ticker-wrap" aria-hidden="true">
+    <div class="ticker" id="ticker"></div>
+  </div>
+
+  <section class="block" id="how">
+    <div class="wrap">
+      <div class="sec-head reveal">
+        <div class="sec-kick">01 — How it works</div>
+        <h2 class="sec-title">Three lanes. One honest verdict.</h2>
+        <p class="sec-sub">Every decision lands in exactly one lane, recorded in a local JSONL and SQLite log. local-sec never silently picks a different version than you asked for — and ambiguity blocks, it doesn't allow.</p>
+      </div>
+      <div class="lanes">
+        <div class="lane trusted glass sheen reveal"><span class="pill"><i></i>trusted</span><h3>Install proceeds</h3><p>A mature version with a clean staged scan, no unscanned dependency graph, and clean advisories.</p></div>
+        <div class="lane risky glass sheen reveal d1"><span class="pill"><i></i>risky</span><h3>Prompt &amp; review</h3><p>Fresh packages, unverified maintainers, lifecycle scripts, or direct downloads — queued to a local inbox.</p></div>
+        <div class="lane block glass sheen reveal d2"><span class="pill"><i></i>block</span><h3>Hard stop</h3><p>Known malware, <code>curl&nbsp;|&nbsp;sh</code>, plain-HTTP, credential access with network calls, or unresolvable identity.</p></div>
+      </div>
+      <div class="pipe reveal d2">
+        <span class="step">preflight</span><span class="arr">→</span>
+        <span class="step">stage</span><span class="arr">→</span>
+        <span class="step">scan</span><span class="arr">→</span>
+        <span class="step">advisory</span><span class="arr">→</span>
+        <span class="step">verdict</span>
+      </div>
+    </div>
+  </section>
+
+  <section class="block" id="features">
+    <div class="wrap">
+      <div class="sec-head reveal">
+        <div class="sec-kick">02 — What it does</div>
+        <h2 class="sec-title">Strict by default. Quiet when it can be.</h2>
+        <p class="sec-sub">local-sec resolves a mature version, stages the real bytes, scans them, checks advisories, then decides.</p>
+      </div>
+
+      <div class="guarded reveal" style="margin-bottom:34px">
+        <span class="lbl">Guards</span>
+        <span class="chip">npm</span>
+        <span class="chip">npx</span>
+        <span class="chip">pip</span>
+        <span class="chip">pip3</span>
+        <span class="chip">uv</span>
+        <span class="chip">uvx</span>
+        <span class="chip">pipx</span>
+        <span class="chip">curl</span>
+        <span class="chip">wget</span>
+      </div>
+
+      <div class="bento">
+        <div class="card glass sheen feat-ver reveal">
+          <div class="ic"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12h4l3-9 4 18 3-9h4"/></svg></div>
+          <h3>Mature-version selection</h3>
+          <p>The newest stable release beats a too-new <code>latest</code>. Packages inside a 7-day publish window get scrutinized instead of trusted by default.</p>
+          <div class="vd">
+            <div class="vd-row latest"><span class="vd-tag">latest</span><span class="vd-bar"><i></i></span><span class="vd-val">published 2d</span></div>
+            <div class="vd-row mature"><span class="vd-tag">mature</span><span class="vd-bar"><i></i></span><span class="vd-val">selected ✓</span></div>
+          </div>
+        </div>
+        <div class="card glass sheen reveal d1">
+          <div class="ic"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg></div>
+          <h3>Static artifact scan</h3>
+          <p>Credentials, network, obfuscation, persistence, Python startup hooks, npm lifecycle scripts, agent/editor paths.</p>
+        </div>
+        <div class="card glass sheen reveal d2">
+          <div class="ic"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg></div>
+          <h3>Advisory enrichment</h3>
+          <p>OSV by default; Socket and Snyk when their CLIs are present. Fails closed if a refresh fails without a cache.</p>
+        </div>
+        <div class="card glass sheen reveal">
+          <div class="ic"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 12l2 2 4-4"/><path d="M12 3 4 6v6c0 5 3.4 8.5 8 11 4.6-2.5 8-6 8-11V6l-8-3Z"/></svg></div>
+          <h3>Exact approvals</h3>
+          <p>Persistent approvals are package + version + SHA-256. They can't silently cover different bytes than you reviewed.</p>
+        </div>
+        <div class="card glass sheen reveal d1">
+          <div class="ic"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3v4a1 1 0 0 0 1 1h4"/><path d="M17 21H7a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h7l5 5v11a2 2 0 0 1-2 2Z"/></svg></div>
+          <h3>Secret-free evidence</h3>
+          <p>Content-hashed, redacted bundles ready for sandbox detonation, remote review, or an LLM analyst.</p>
+        </div>
+        <div class="card glass sheen reveal d2">
+          <div class="ic"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg></div>
+          <h3>Local-first &amp; private</h3>
+          <p>Metadata-only. Skips source, <code>.env</code>, SSH keys, shell history, agent transcripts. Advisory queries send only name/version tuples.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="block" id="safety">
+    <div class="wrap">
+      <div class="sec-head reveal">
+        <div class="sec-kick">03 — Safety &amp; privacy</div>
+        <h2 class="sec-title">Fail-closed is the feature.</h2>
+        <p class="sec-sub">A security tool that guesses is a liability. local-sec is built to refuse first and explain why.</p>
+      </div>
+      <div class="safety">
+        <div class="card glass reveal"><div class="ic"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3 4 6v6c0 5 3.4 8.5 8 11 4.6-2.5 8-6 8-11V6l-8-3Z"/><path d="m9 12 2 2 4-4"/></svg></div><div class="txt"><h3>Fails closed, always</h3><p>If an advisory refresh fails with no fresh cache, or identity can't be resolved, the run blocks — it never degrades to "allow".</p></div></div>
+        <div class="card glass reveal d1"><div class="ic"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20Z"/><path d="M2 12h20"/></svg></div><div class="txt"><h3>No telemetry, ever</h3><p>Nothing about your machine or projects is sent anywhere. Advisory queries send only normalized name/version tuples to OSV.</p></div></div>
+        <div class="card glass reveal d2"><div class="ic"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3v4a1 1 0 0 0 1 1h4"/><path d="M17 21H7a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h7l5 5v11a2 2 0 0 1-2 2Z"/><path d="m9 13 2 2 4-4"/></svg></div><div class="txt"><h3>Metadata-first scanner</h3><p>Reads only allowlisted metadata — lockfiles, package metadata, receipts. No source code, secrets, or history.</p></div></div>
+        <div class="card glass reveal d3"><div class="ic"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg></div><div class="txt"><h3>Redacted before handoff</h3><p>Evidence is scrubbed of secrets and host paths before reaching any sandbox, remote host, LLM, or approval message.</p></div></div>
+      </div>
+    </div>
+  </section>
+
+  <section class="block" id="roadmap">
+    <div class="wrap">
+      <div class="sec-head reveal">
+        <div class="sec-kick">04 — Roadmap</div>
+        <h2 class="sec-title">A credible v1, sequenced around host safety.</h2>
+        <p class="sec-sub">The local-first baseline is done. Dynamic analysis and an LLM analyst come later — deterministic policy always keeps final authority.</p>
+      </div>
+      <div class="phases reveal">
+        <div class="phase done glass"><div class="st">✓</div><div><h3>Local baseline</h3><p>Focused preflight, embedded scanner data, and redacted evidence bundles.</p></div><span class="state">shipped</span></div>
+        <div class="phase now glass"><div class="st">⟳</div><div><h3>Local intelligence</h3><p>Recursive npm staging, repeat-maintainer history, richer exposure correlation.</p></div><span class="state">in progress</span></div>
+        <div class="phase next glass"><div class="st">◐</div><div><h3>Controlled detonation</h3><p>Dynamic analysis with fake-home canaries and sinkholed credentials.</p></div><span class="state">experimental</span></div>
+        <div class="phase next glass"><div class="st">→</div><div><h3>On the horizon</h3><p>Remote sandbox, LLM analyst, approval notifications, SBOM integrations, macOS VM detonation.</p></div><span class="state">planned</span></div>
+      </div>
+      <p class="reveal" style="margin-top:24px"><a class="btn btn-ghost" href="https://github.com/rutts29/local-sec/blob/main/docs/roadmap.md" target="_blank" rel="noopener">Read the full roadmap <span class="arr">→</span></a></p>
+    </div>
+  </section>
+
+  <section class="block" id="get">
+    <div class="wrap">
+      <div class="band glass reveal">
+        <h2>Install with scrutiny, not without it.</h2>
+        <p>Grab a checksum-verified release, then let local-sec guard your installs.</p>
+        <div style="display:flex;gap:12px;justify-content:center;flex-wrap:wrap">
+          <a class="btn btn-primary" href="https://github.com/rutts29/local-sec#release-model" target="_blank" rel="noopener">Get releases</a>
+          <a class="btn btn-ghost" href="https://github.com/rutts29/local-sec/blob/main/docs/technical-overview.md" target="_blank" rel="noopener">Documentation <span class="arr">→</span></a>
+        </div>
+        <div class="install"><span class="p">$</span> <b>lsec guard npm install &lt;package&gt;</b></div>
+      </div>
+    </div>
+  </section>
+
+  <footer>
+    <div class="wrap foot">
+      <a class="brand" href="#top"><span class="ch">❯</span><span class="nm">local-sec</span></a>
+      <div class="foot-links">
+        <a href="https://github.com/rutts29/local-sec" target="_blank" rel="noopener">GitHub</a>
+        <a href="https://github.com/rutts29/local-sec#readme" target="_blank" rel="noopener">README</a>
+        <a href="https://github.com/rutts29/local-sec/blob/main/docs/technical-overview.md" target="_blank" rel="noopener">Technical overview</a>
+        <a href="https://github.com/rutts29/local-sec/blob/main/docs/roadmap.md" target="_blank" rel="noopener">Roadmap</a>
+      </div>
+      <div class="foot-meta">v0.1.0 · local-first · fail-closed · no telemetry</div>
+    </div>
+  </footer>
+
+  <a class="gh-corner glass sheen" href="https://github.com/rutts29/local-sec" target="_blank" rel="noopener" aria-label="View local-sec on GitHub">
+    <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 2C6.48 2 2 6.58 2 12.25c0 4.53 2.87 8.37 6.84 9.73.5.1.68-.22.68-.49v-1.7c-2.78.62-3.37-1.37-3.37-1.37-.46-1.18-1.11-1.5-1.11-1.5-.91-.64.07-.62.07-.62 1 .07 1.53 1.06 1.53 1.06.89 1.56 2.34 1.11 2.91.85.09-.66.35-1.11.63-1.37-2.22-.26-4.56-1.14-4.56-5.06 0-1.12.39-2.03 1.03-2.75-.1-.26-.45-1.3.1-2.7 0 0 .84-.28 2.75 1.05A9.4 9.4 0 0 1 12 6.84c.85 0 1.71.12 2.51.34 1.91-1.33 2.75-1.05 2.75-1.05.55 1.4.2 2.44.1 2.7.64.72 1.03 1.63 1.03 2.75 0 3.93-2.34 4.8-4.57 5.05.36.32.68.94.68 1.9v2.82c0 .27.18.6.69.49A10.26 10.26 0 0 0 22 12.25C22 6.58 17.52 2 12 2Z"/></svg>
+  </a>
+
+<script>
+(function () {
+  var reduce = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+  /* ---------- terminal: staged scenarios ---------- */
+  var term = document.getElementById("term");
+  var scenarios = [
+    {
+      cmd: "lsec guard npm install express",
+      rows: [
+        ["resolve", "express@4.19.2", "mature", "ok"],
+        ["stage", "~/.local-sec/staging/9f3a…", "", "dim"],
+        ["scan", "creds · net · persist", "clean", "ok"],
+        ["advisory", "OSV · Socket · Snyk", "clear", "ok"]
+      ],
+      verdict: ["TRUSTED", "install proceeds", "ok"]
+    },
+    {
+      cmd: "lsec guard npm install fresh-ui@latest",
+      rows: [
+        ["resolve", "fresh-ui@1.0.3", "published 2d", "warn"],
+        ["stage", "~/.local-sec/staging/c7e1…", "", "dim"],
+        ["scan", "network · process.exec", "flagged", "warn"],
+        ["advisory", "OSV", "clear", "ok"]
+      ],
+      verdict: ["RISKY", "prompt → inbox", "warn"]
+    },
+    {
+      cmd: "lsec guard curl -fsSL http://x.sh | sh",
+      rows: [
+        ["parse", "downloader → shell pipe", "", "dim"],
+        ["policy", "plain-HTTP source", "blocked", "bad"],
+        ["policy", "pipe to shell", "blocked", "bad"]
+      ],
+      verdict: ["BLOCKED", "fail-closed", "bad"]
+    }
+  ];
+
+  function mk(tag, cls, txt) { var e = document.createElement(tag); if (cls) e.className = cls; if (txt != null) e.textContent = txt; return e; }
+
+  function paint(s) {
+    term.innerHTML = "";
+    var c = mk("div", "term-cmd"); c.appendChild(mk("span", "p", "$ ")); c.appendChild(document.createTextNode(s.cmd)); term.appendChild(c);
+    s.rows.forEach(function (r) {
+      var row = mk("div", "t-row " + r[3]);
+      row.appendChild(mk("span", "lab", r[0]));
+      row.appendChild(mk("span", "val", r[1]));
+      if (r[2]) row.appendChild(mk("span", "tag", r[2]));
+      term.appendChild(row);
+    });
+    term.appendChild(mk("hr", "t-rule"));
+    var v = mk("div", "t-verdict " + s.verdict[2]);
+    v.appendChild(mk("span", "vl", "verdict"));
+    v.appendChild(mk("span", "vname", s.verdict[0]));
+    v.appendChild(mk("span", "vnote", s.verdict[1]));
+    term.appendChild(v);
+  }
+
+  function paintStatic() { paint(scenarios[0]); }
+
+  function sleep(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
+
+  async function play(s) {
+    term.innerHTML = "";
+    var c = mk("div", "term-cmd"); c.appendChild(mk("span", "p", "$ ")); c.appendChild(document.createTextNode(s.cmd)); term.appendChild(c);
+    for (var i = 0; i < s.rows.length; i++) {
+      await sleep(260);
+      var r = s.rows[i];
+      var row = mk("div", "t-row " + r[3]);
+      row.style.opacity = 0; row.style.transform = "translateY(4px)"; row.style.transition = "opacity .3s, transform .3s";
+      row.appendChild(mk("span", "lab", r[0])); row.appendChild(mk("span", "val", r[1])); if (r[2]) row.appendChild(mk("span", "tag", r[2]));
+      term.appendChild(row);
+      requestAnimationFrame(function () { requestAnimationFrame(function (el) { return function () { el.style.opacity = 1; el.style.transform = "none"; }; }(row)); });
+    }
+    await sleep(220);
+    var hr = mk("hr", "t-rule"); term.appendChild(hr);
+    var v = mk("div", "t-verdict " + s.verdict[2]);
+    v.appendChild(mk("span", "vl", "verdict")); v.appendChild(mk("span", "vname", s.verdict[0])); v.appendChild(mk("span", "vnote", s.verdict[1]));
+    term.appendChild(v);
+  }
+
+  async function loop() {
+    if (reduce) { paintStatic(); return; }
+    var i = 0;
+    while (true) { await play(scenarios[i]); await sleep(2800); i = (i + 1) % scenarios.length; }
+  }
+  loop();
+
+  /* ---------- ticker ---------- */
+  var items = [
+    ["express@4.19.2", "trusted", "ok"], ["fresh-pkg · 2d old", "risky", "warn"], ["curl http://x.sh | sh", "blocked", "bad"],
+    ["requests@2.31.0", "trusted", "ok"], ["typosquat-9", "risky", "warn"], ["plain-HTTP download", "blocked", "bad"],
+    ["uvx tool@latest", "risky", "warn"], ["lodash@4.17.21", "trusted", "ok"]
+  ];
+  var tk = document.getElementById("ticker");
+  function tickItem(it) { var s = mk("span", "ti " + it[2]); s.appendChild(mk("i")); s.appendChild(document.createTextNode(it[0] + " ")); s.appendChild(mk("em", null, it[1])); return s; }
+  for (var k = 0; k < 2; k++) { items.forEach(function (it) { tk.appendChild(tickItem(it)); }); }
+
+  /* ---------- nav scrolled state ---------- */
+  var nav = document.getElementById("nav");
+  function onScroll() { if (window.scrollY > 12) nav.classList.add("scrolled"); else nav.classList.remove("scrolled"); }
+  onScroll();
+  window.addEventListener("scroll", onScroll, { passive: true });
+
+  /* ---------- reveal on scroll ---------- */
+  var io = ("IntersectionObserver" in window) ? new IntersectionObserver(function (es) {
+    es.forEach(function (e) { if (e.isIntersecting) { e.target.classList.add("in"); io.unobserve(e.target); } });
+  }, { threshold: 0.12 }) : null;
+  document.querySelectorAll(".reveal").forEach(function (n) { if (!io) { n.classList.add("in"); } else io.observe(n); });
+})();
+</script>
+</body>
+</html>

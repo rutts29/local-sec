@@ -1,7 +1,13 @@
 package lsec
 
 import (
+	"archive/tar"
+	"bytes"
+	"compress/gzip"
 	"context"
+	"crypto/sha1"
+	"crypto/sha512"
+	"encoding/base64"
 	"io"
 	"net/http"
 	"net/url"
@@ -193,6 +199,314 @@ func TestStageNPMBlocksLocalPathBeforePack(t *testing.T) {
 
 	if firstFindingSeverity(findings, "unsafe_npm_staging_spec") != "block" {
 		t.Fatalf("expected blocking unsafe_npm_staging_spec finding, got %#v", findings)
+	}
+}
+
+func TestStageNPMRecursiveUsesIsolatedHomeCacheAndIgnoreScripts(t *testing.T) {
+	root := t.TempDir()
+	bin := t.TempDir()
+	records := filepath.Join(root, "records")
+	writeFakeTool(t, bin, "npm", `#!/bin/sh
+mkdir -p `+shellQuote(records)+`
+printf '%s\n' "$@" > `+shellQuote(filepath.Join(records, "args"))+`
+printf '%s\n' "$HOME" > `+shellQuote(filepath.Join(records, "home"))+`
+printf '%s\n' "$XDG_CACHE_HOME" > `+shellQuote(filepath.Join(records, "cache"))+`
+printf '%s\n' "$NPM_CONFIG_USERCONFIG" > `+shellQuote(filepath.Join(records, "userconfig"))+`
+printf '%s\n' "$PWD" > `+shellQuote(filepath.Join(records, "pwd"))+`
+cat > package-lock.json <<'JSON'
+{"lockfileVersion":3,"packages":{"":{"name":"stage"},"node_modules/example":{"version":"1.0.0","resolved":"https://registry.npmjs.org/example/-/example-1.0.0.tgz","integrity":"sha512-test"}}}
+JSON
+`)
+	t.Setenv("PATH", bin+":/bin:/usr/bin")
+	t.Setenv("HOME", filepath.Join(root, "real-home"))
+	t.Chdir(root)
+	stage := filepath.Join(root, "stage")
+	analysis := Classify([]string{"npm", "install", "example"})
+
+	_, _ = StageArtifacts(context.Background(), stage, analysis, VersionInfo{})
+
+	args := readTestFile(t, filepath.Join(records, "args"))
+	if !strings.Contains(args, "install\n") || !strings.Contains(args, "--package-lock-only\n") || !strings.Contains(args, "--ignore-scripts\n") {
+		t.Fatalf("npm args = %q, want install with --package-lock-only and --ignore-scripts", args)
+	}
+	if strings.Contains(args, "--pack-destination") {
+		t.Fatalf("npm args = %q, should not run npm pack", args)
+	}
+	home := strings.TrimSpace(readTestFile(t, filepath.Join(records, "home")))
+	cache := strings.TrimSpace(readTestFile(t, filepath.Join(records, "cache")))
+	userconfig := strings.TrimSpace(readTestFile(t, filepath.Join(records, "userconfig")))
+	pwd := strings.TrimSpace(readTestFile(t, filepath.Join(records, "pwd")))
+	stagePrefix := testRealPath(t, stage) + string(os.PathSeparator)
+	for label, got := range map[string]string{"HOME": home, "XDG_CACHE_HOME": cache, "NPM_CONFIG_USERCONFIG": userconfig, "PWD": pwd} {
+		if !strings.HasPrefix(testRealPath(t, got), stagePrefix) {
+			t.Fatalf("%s = %q, want inside staging %q", label, got, stage)
+		}
+		if strings.Contains(got, "real-home") {
+			t.Fatalf("%s = %q, leaked real HOME", label, got)
+		}
+	}
+}
+
+func TestStageNPMRecursiveStagesLockedDependencies(t *testing.T) {
+	root := t.TempDir()
+	bin := t.TempDir()
+	top := makeTestNPMPackageTgz(t, "example", "1.0.0", `{"dep-pkg":"2.0.0"}`)
+	dep := makeTestNPMPackageTgz(t, "dep-pkg", "2.0.0", `{}`)
+	writeFakeTool(t, bin, "npm", fakeNPMInstallLockfile(map[string][]byte{
+		"example": top,
+		"dep-pkg": dep,
+	}))
+	t.Setenv("PATH", bin+":/bin:/usr/bin")
+	withFakeNPMTarballs(t, map[string][]byte{
+		"/example/-/example-1.0.0.tgz": top,
+		"/dep-pkg/-/dep-pkg-2.0.0.tgz": dep,
+	})
+	analysis := Classify([]string{"npm", "install", "example"})
+
+	artifacts, findings := StageArtifacts(context.Background(), filepath.Join(root, "stage"), analysis, VersionInfo{})
+
+	if hasBlockingFinding(findings) {
+		t.Fatalf("findings = %#v, want recursive npm staging success", findings)
+	}
+	if len(artifacts) != 2 {
+		t.Fatalf("artifacts = %#v, want top-level and dependency tarballs", artifacts)
+	}
+	if !hasArtifact(artifacts, "example", "1.0.0") || !hasArtifact(artifacts, "dep-pkg", "2.0.0") {
+		t.Fatalf("artifacts = %#v, want example and dep-pkg", artifacts)
+	}
+}
+
+func TestStageNPMRecursiveBlocksIntegrityMismatch(t *testing.T) {
+	root := t.TempDir()
+	bin := t.TempDir()
+	body := makeTestNPMPackageTgz(t, "example", "1.0.0", `{}`)
+	writeFakeTool(t, bin, "npm", `#!/bin/sh
+cat > package-lock.json <<'JSON'
+{"lockfileVersion":3,"packages":{"":{"name":"stage"},"node_modules/example":{"version":"1.0.0","resolved":"https://registry.npmjs.org/example/-/example-1.0.0.tgz","integrity":"sha512-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=="}}}
+JSON
+`)
+	t.Setenv("PATH", bin+":/bin:/usr/bin")
+	withFakeNPMTarballs(t, map[string][]byte{"/example/-/example-1.0.0.tgz": body})
+	analysis := Classify([]string{"npm", "install", "example"})
+
+	artifacts, findings := StageArtifacts(context.Background(), filepath.Join(root, "stage"), analysis, VersionInfo{})
+
+	if len(artifacts) != 0 {
+		t.Fatalf("artifacts = %#v, want none on integrity mismatch", artifacts)
+	}
+	if firstFindingSeverity(findings, "npm_tarball_integrity_mismatch") != "block" {
+		t.Fatalf("findings = %#v, want blocking integrity mismatch", findings)
+	}
+}
+
+func TestParseNPMStagingLockfileBlocksLinkedPackages(t *testing.T) {
+	lockfile := filepath.Join(t.TempDir(), "package-lock.json")
+	body := []byte(`{
+		"lockfileVersion": 3,
+		"packages": {
+			"": {"name": "stage"},
+			"node_modules/local-pkg": {
+				"resolved": "../local-pkg",
+				"link": true
+			}
+		}
+	}`)
+	if err := os.WriteFile(lockfile, body, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	locked, findings := parseNPMStagingLockfile(lockfile)
+
+	if len(locked) != 0 {
+		t.Fatalf("locked = %#v, want none", locked)
+	}
+	if firstFindingSeverity(findings, "npm_lockfile_linked_package") != "block" {
+		t.Fatalf("findings = %#v, want blocking linked package finding", findings)
+	}
+}
+
+func TestParseNPMStagingLockfileBlocksUnverifiedPackagePath(t *testing.T) {
+	lockfile := filepath.Join(t.TempDir(), "package-lock.json")
+	body := []byte(`{
+		"lockfileVersion": 3,
+		"packages": {
+			"": {"name": "stage"},
+			"packages/local-pkg": {
+				"version": "1.0.0",
+				"resolved": "https://registry.npmjs.org/local-pkg/-/local-pkg-1.0.0.tgz",
+				"integrity": "sha512-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=="
+			}
+		}
+	}`)
+	if err := os.WriteFile(lockfile, body, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	locked, findings := parseNPMStagingLockfile(lockfile)
+
+	if len(locked) != 0 {
+		t.Fatalf("locked = %#v, want none", locked)
+	}
+	if firstFindingSeverity(findings, "npm_lockfile_unverified_package_path") != "block" {
+		t.Fatalf("findings = %#v, want blocking unverified package path finding", findings)
+	}
+}
+
+func TestParseNPMStagingLockfileBlocksMismatchedResolvedURL(t *testing.T) {
+	lockfile := filepath.Join(t.TempDir(), "package-lock.json")
+	body := []byte(`{
+		"lockfileVersion": 3,
+		"packages": {
+			"": {"name": "stage"},
+			"node_modules/safe-pkg": {
+				"version": "1.2.3",
+				"resolved": "https://registry.npmjs.org/other-pkg/-/other-pkg-1.2.3.tgz",
+				"integrity": "sha512-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=="
+			}
+		}
+	}`)
+	if err := os.WriteFile(lockfile, body, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	locked, findings := parseNPMStagingLockfile(lockfile)
+
+	if len(locked) != 0 {
+		t.Fatalf("locked = %#v, want none", locked)
+	}
+	if firstFindingSeverity(findings, "npm_lockfile_resolved_mismatch") != "block" {
+		t.Fatalf("findings = %#v, want blocking resolved mismatch finding", findings)
+	}
+}
+
+func TestParseNPMStagingLockfileUsesDeepestPackageName(t *testing.T) {
+	lockfile := filepath.Join(t.TempDir(), "package-lock.json")
+	body := []byte(`{
+		"lockfileVersion": 3,
+		"packages": {
+			"": {"name": "stage"},
+			"node_modules/a": {
+				"version": "1.0.0",
+				"resolved": "https://registry.npmjs.org/a/-/a-1.0.0.tgz",
+				"integrity": "sha512-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=="
+			},
+			"node_modules/a/node_modules/@s/b": {
+				"version": "1.0.0",
+				"resolved": "https://registry.npmjs.org/@s/b/-/b-1.0.0.tgz",
+				"integrity": "sha512-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=="
+			}
+		}
+	}`)
+	if err := os.WriteFile(lockfile, body, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	locked, findings := parseNPMStagingLockfile(lockfile)
+
+	if len(findings) != 0 {
+		t.Fatalf("findings = %#v, want none", findings)
+	}
+	if len(locked) != 2 {
+		t.Fatalf("locked = %#v, want 2", locked)
+	}
+	if locked[0].Name != "@s/b" || locked[0].Version != "1.0.0" {
+		t.Fatalf("first locked package = %#v, want @s/b@1.0.0", locked[0])
+	}
+	if locked[1].Name != "a" || locked[1].Version != "1.0.0" {
+		t.Fatalf("second locked package = %#v, want a@1.0.0", locked[1])
+	}
+}
+
+func TestStageNPMNestedDependenciesDoNotCollideByParentName(t *testing.T) {
+	root := t.TempDir()
+	bin := t.TempDir()
+	top := makeTestNPMPackageTgz(t, "a", "1.0.0", `{"b":"1.0.0"}`)
+	dep := makeTestNPMPackageTgz(t, "b", "1.0.0", `{}`)
+	writeFakeTool(t, bin, "npm", `#!/bin/sh
+cat > package-lock.json <<'JSON'
+{
+  "lockfileVersion": 3,
+  "packages": {
+    "": {"name": "stage"},
+    "node_modules/a": {
+      "version": "1.0.0",
+      "resolved": "https://registry.npmjs.org/a/-/a-1.0.0.tgz",
+      "integrity": "`+testSRI("sha512", top)+`"
+    },
+    "node_modules/a/node_modules/b": {
+      "version": "1.0.0",
+      "resolved": "https://registry.npmjs.org/b/-/b-1.0.0.tgz",
+      "integrity": "`+testSRI("sha512", dep)+`"
+    }
+  }
+}
+JSON
+`)
+	t.Setenv("PATH", bin+":/bin:/usr/bin")
+	withFakeNPMTarballs(t, map[string][]byte{
+		"/a/-/a-1.0.0.tgz": top,
+		"/b/-/b-1.0.0.tgz": dep,
+	})
+	analysis := Classify([]string{"npm", "install", "a"})
+
+	artifacts, findings := StageArtifacts(context.Background(), filepath.Join(root, "stage"), analysis, VersionInfo{})
+
+	if hasBlockingFinding(findings) || hasFinding(findings, "npm_tarball_download_failed") {
+		t.Fatalf("findings = %#v, want nested npm staging success", findings)
+	}
+	if len(artifacts) != 2 {
+		t.Fatalf("artifacts = %#v, want top-level and nested dependency tarballs", artifacts)
+	}
+	if !hasArtifact(artifacts, "a", "1.0.0") || !hasArtifact(artifacts, "b", "1.0.0") {
+		t.Fatalf("artifacts = %#v, want a and b", artifacts)
+	}
+}
+
+func TestDownloadNPMTarballAvoidsScopedBasenameCollision(t *testing.T) {
+	staging := t.TempDir()
+	unscoped := makeTestNPMPackageTgz(t, "pkg", "1.0.0", `{}`)
+	scoped := makeTestNPMPackageTgz(t, "@scope/pkg", "1.0.0", `{}`)
+	tarballs := map[string][]byte{
+		"https://registry.npmjs.org/pkg/-/pkg-1.0.0.tgz":        unscoped,
+		"https://registry.npmjs.org/@scope/pkg/-/pkg-1.0.0.tgz": scoped,
+	}
+	previous := http.DefaultClient
+	http.DefaultClient = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		body, ok := tarballs[req.URL.String()]
+		if !ok {
+			t.Fatalf("unexpected npm tarball URL: %s", req.URL.String())
+		}
+		return &http.Response{
+			StatusCode: 200,
+			Status:     "200 OK",
+			Body:       io.NopCloser(bytes.NewReader(body)),
+			Header:     make(http.Header),
+		}, nil
+	})}
+	t.Cleanup(func() { http.DefaultClient = previous })
+
+	first := downloadNPMTarball(context.Background(), staging, npmLockedArtifact{
+		Name:      "pkg",
+		Version:   "1.0.0",
+		Resolved:  "https://registry.npmjs.org/pkg/-/pkg-1.0.0.tgz",
+		Integrity: testSRI("sha512", unscoped),
+	})
+	second := downloadNPMTarball(context.Background(), staging, npmLockedArtifact{
+		Name:      "@scope/pkg",
+		Version:   "1.0.0",
+		Resolved:  "https://registry.npmjs.org/@scope/pkg/-/pkg-1.0.0.tgz",
+		Integrity: testSRI("sha512", scoped),
+	})
+
+	if first != nil || second != nil {
+		t.Fatalf("findings = %#v %#v, want both downloads to succeed", first, second)
+	}
+	entries, err := os.ReadDir(staging)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 2 {
+		t.Fatalf("entries = %#v, want two distinct tarballs", entries)
 	}
 }
 
@@ -489,11 +803,13 @@ func TestParseNPMLockfileExactPackages(t *testing.T) {
 			"": {"name": "app"},
 			"node_modules/left-pad": {
 				"version": "1.3.0",
-				"integrity": "sha512-test"
+				"integrity": "sha512-test",
+				"resolved": "https://registry.npmjs.org/left-pad/-/left-pad-1.3.0.tgz"
 			},
 			"node_modules/@scope/pkg": {
 				"version": "2.0.0",
-				"integrity": "sha512-test"
+				"integrity": "sha512-test",
+				"resolved": "https://registry.npmjs.org/@scope/pkg/-/pkg-2.0.0.tgz"
 			}
 		}
 	}`)
@@ -534,6 +850,152 @@ func TestParseNPMLockfileBlocksMissingIntegrity(t *testing.T) {
 	if firstFindingSeverity(findings, "npm_lockfile_missing_integrity") != "block" {
 		t.Fatalf("expected missing integrity block, got %#v", findings)
 	}
+}
+
+func readTestFile(t *testing.T, path string) string {
+	t.Helper()
+	body, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(body)
+}
+
+func testRealPath(t *testing.T, path string) string {
+	t.Helper()
+	realPath, err := filepath.EvalSymlinks(path)
+	if err == nil {
+		return realPath
+	}
+	if !os.IsNotExist(err) {
+		t.Fatal(err)
+	}
+	dir, base := filepath.Split(path)
+	realDir, err := filepath.EvalSymlinks(filepath.Clean(dir))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return filepath.Join(realDir, base)
+}
+
+func makeTestNPMPackageTgz(t *testing.T, name, version, dependencies string) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	gz := gzip.NewWriter(&buf)
+	tw := tar.NewWriter(gz)
+	pkg := `{"name":"` + name + `","version":"` + version + `","dependencies":` + dependencies + `}`
+	header := &tar.Header{Name: "package/package.json", Mode: 0o600, Size: int64(len(pkg))}
+	if err := tw.WriteHeader(header); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tw.Write([]byte(pkg)); err != nil {
+		t.Fatal(err)
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := gz.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
+}
+
+func fakeNPMInstallLockfile(tarballs map[string][]byte) string {
+	return `#!/bin/sh
+cat > package-lock.json <<'JSON'
+{
+  "lockfileVersion": 3,
+  "packages": {
+    "": {"name": "stage"},
+    "node_modules/example": {
+      "version": "1.0.0",
+      "resolved": "https://registry.npmjs.org/example/-/example-1.0.0.tgz",
+      "integrity": "` + testSRI("sha512", tarballs["example"]) + `"
+    },
+    "node_modules/dep-pkg": {
+      "version": "2.0.0",
+      "resolved": "https://registry.npmjs.org/dep-pkg/-/dep-pkg-2.0.0.tgz",
+      "integrity": "` + testSRI("sha512", tarballs["dep-pkg"]) + `"
+    }
+  }
+}
+JSON
+`
+}
+
+func testSRI(algorithm string, body []byte) string {
+	switch algorithm {
+	case "sha512":
+		sum := sha512.Sum512(body)
+		return "sha512-" + base64.StdEncoding.EncodeToString(sum[:])
+	case "sha1":
+		sum := sha1.Sum(body)
+		return "sha1-" + base64.StdEncoding.EncodeToString(sum[:])
+	default:
+		return ""
+	}
+}
+
+func withFakeNPMTarballs(t *testing.T, tarballs map[string][]byte) {
+	t.Helper()
+	previous := http.DefaultClient
+	http.DefaultClient = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if req.URL.Scheme != "https" || req.URL.Hostname() != "registry.npmjs.org" {
+			t.Fatalf("unexpected npm tarball URL: %s", req.URL.String())
+		}
+		body, ok := tarballs[req.URL.EscapedPath()]
+		if !ok {
+			return &http.Response{
+				StatusCode: 404,
+				Status:     "404 Not Found",
+				Body:       io.NopCloser(strings.NewReader("missing")),
+				Header:     make(http.Header),
+			}, nil
+		}
+		return &http.Response{
+			StatusCode: 200,
+			Status:     "200 OK",
+			Body:       io.NopCloser(bytes.NewReader(body)),
+			Header:     make(http.Header),
+		}, nil
+	})}
+	t.Cleanup(func() { http.DefaultClient = previous })
+}
+
+func withFakeNPMHTTP(t *testing.T, metadata map[string]string, tarballs map[string][]byte) {
+	t.Helper()
+	previous := http.DefaultClient
+	http.DefaultClient = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if body, ok := tarballs[req.URL.EscapedPath()]; ok {
+			return &http.Response{
+				StatusCode: 200,
+				Status:     "200 OK",
+				Body:       io.NopCloser(bytes.NewReader(body)),
+				Header:     make(http.Header),
+			}, nil
+		}
+		name := strings.TrimPrefix(req.URL.Path, "/")
+		body, ok := metadata[name]
+		if !ok {
+			body = `{"dist-tags":{"latest":""},"time":{}}`
+		}
+		return &http.Response{
+			StatusCode: 200,
+			Status:     "200 OK",
+			Body:       io.NopCloser(strings.NewReader(body)),
+			Header:     make(http.Header),
+		}, nil
+	})}
+	t.Cleanup(func() { http.DefaultClient = previous })
+}
+
+func hasArtifact(artifacts []Artifact, name, version string) bool {
+	for _, artifact := range artifacts {
+		if artifact.Name == name && artifact.Version == version {
+			return true
+		}
+	}
+	return false
 }
 
 func firstFindingSeverity(findings []Finding, code string) string {

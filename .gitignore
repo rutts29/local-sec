@@ -1,2 +1,10 @@
 dist/
+.aikido-*
+.aikido-opengrep-scan/
+.playwright-mcp/
+.semgrep-*
+.opengrep-*
 
+
+# accidental npm lockfiles under Go package
+internal/lsec/package-lock.json
