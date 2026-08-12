@@ -1,38 +1,31 @@
-# local-sec landing page
+# local-sec site
 
-A single, self-contained `index.html` (inline CSS + JS, zero dependencies) with a
-dark terminal aesthetic and macOS "liquid glass" panels. No build step.
+Static product site under `site/` — no build step, no dependencies.
+
+| Page | File |
+|------|------|
+| Landing | `index.html` |
+| Docs | `docs.html` |
+| Roadmap | `roadmap.html` |
+| Shared styles (docs/roadmap) | `site.css` |
+
+Docs and roadmap live on the site itself so they work whether the project stays open source or not. GitHub is only used for the optional corner link and release downloads.
 
 ## Run locally
 
-Open the file directly, or serve it so relative behavior matches production:
+Serve `site/` so multi-page links work:
 
 ```sh
-python3 -m http.server 8080
-# → http://localhost:8080
+cd site && python3 -m http.server 8765
+# → http://localhost:8765
 ```
 
 ## Deploy
 
-The page lives in `site/`. The repo includes deploy configs at the root.
-
-### Netlify
-
-`netlify.toml` sets `publish = "site"`. Import the repo at
-[app.netlify.com/start](https://app.netlify.com/start) — no build command needed.
-
-### Vercel
-
-Import the repo at [vercel.com/new](https://vercel.com/new). Under project
-settings set **Root Directory** (or **Output Directory**) to `site`, then deploy.
-`vercel.json` adds clean URLs and security headers.
-
-### GitHub Pages (alternative)
-
-Serve `site/` from a branch (e.g. move/copy `index.html` to the root of a
-`gh-pages` branch, or point Pages at the `site` folder via GitHub Actions).
+`netlify.toml` publishes `site/`. On Vercel, set the root/output directory to `site`.
+`vercel.json` enables clean URLs and security headers.
 
 ## Editing
 
-All content and styling is in `index.html`. The three hero-terminal scenarios
-(`trusted`, `risky`, `block`) are defined in the `<script>` near the bottom.
+Landing look-and-feel and hero terminal scenarios live in `index.html`.
+Docs/roadmap chrome and prose styles live in `site.css`.

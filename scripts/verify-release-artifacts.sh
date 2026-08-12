@@ -55,6 +55,31 @@ require_directory_member() {
   esac
 }
 
+require_readme_linked_member() {
+  archive="$1"
+  member="$2"
+  if ! tar -tzf "$archive" "$member" >/dev/null 2>&1; then
+    echo "$archive README.md links to missing archive member: $member" >&2
+    exit 1
+  fi
+  require_regular_member "$archive" "$member"
+}
+
+reject_appledouble_members() {
+  archive="$1"
+  members="$2"
+  awk -v archive="$archive" '
+    {
+      count = split($0, parts, "/")
+      if (parts[count] ~ /^\._/) {
+        print archive " contains AppleDouble archive member: " $0 > "/dev/stderr"
+        failed = 1
+      }
+    }
+    END { exit failed }
+  ' "$members"
+}
+
 physical_archives="$tmp_dir/physical-archives"
 : > "$physical_archives"
 for archive in "$dist"/*.tar.gz "$dist"/.[!.]*.tar.gz "$dist"/..?*.tar.gz; do
@@ -148,16 +173,23 @@ for target in darwin_amd64 darwin_arm64 linux_amd64 linux_arm64 windows_amd64; d
     windows_amd64) binary="lsec.exe" ;;
   esac
   members="$tmp_dir/$target.members"
-  tar -tzf "$archive" > "$members"
+  raw_members="$tmp_dir/$target.raw-members"
+  gzip -dc "$archive" | pax -f - > "$raw_members"
+  if ! reject_appledouble_members "$archive" "$raw_members"; then
+    exit 1
+  fi
+  env COPYFILE_DISABLE=1 tar -tzf "$archive" > "$members"
   awk -v archive="$archive" -v name="$name" -v binary="$binary" '
     BEGIN {
       required[name "/"] = 1
       required[name "/README.md"] = 1
+      required[name "/SECURITY.md"] = 1
       required[name "/VERSION"] = 1
       required[name "/" binary] = 1
       required[name "/docs/"] = 1
       required[name "/docs/technical-overview.md"] = 1
       required[name "/docs/roadmap.md"] = 1
+      required[name "/docs/threat-model-and-limitations.md"] = 1
     }
     {
       member = $0
@@ -183,9 +215,37 @@ for target in darwin_amd64 darwin_arm64 linux_amd64 linux_arm64 windows_amd64; d
   require_directory_member "$archive" "$name/"
   require_directory_member "$archive" "$name/docs/"
   require_regular_member "$archive" "$name/README.md"
+  require_regular_member "$archive" "$name/SECURITY.md"
   require_regular_member "$archive" "$name/VERSION"
   require_regular_member "$archive" "$name/docs/technical-overview.md"
   require_regular_member "$archive" "$name/docs/roadmap.md"
+  require_regular_member "$archive" "$name/docs/threat-model-and-limitations.md"
+  readme="$tmp_dir/$target.readme"
+  readme_links="$tmp_dir/$target.readme-links"
+  tar -xOf "$archive" "$name/README.md" > "$readme"
+  awk '
+    {
+      line = $0
+      while (match(line, /\]\([^)]*\)/)) {
+        link = substr(line, RSTART + 2, RLENGTH - 3)
+        sub(/[[:space:]].*$/, "", link)
+        sub(/#.*/, "", link)
+        if (link != "" && link !~ /^[[:alpha:]][[:alnum:]+.-]*:/ && link !~ /^\//) {
+          print link
+        }
+        line = substr(line, RSTART + RLENGTH)
+      }
+    }
+  ' "$readme" | LC_ALL=C sort -u > "$readme_links"
+  while IFS= read -r link; do
+    case "$link" in
+      .|..|/*|../*|*/../*|*/..)
+        echo "$archive README.md contains unsafe local link: $link" >&2
+        exit 1
+        ;;
+    esac
+    require_readme_linked_member "$archive" "$name/$link"
+  done < "$readme_links"
   archive_version="$tmp_dir/$target.version"
   expected_version="$tmp_dir/expected-version"
   tar -xOf "$archive" "$name/VERSION" > "$archive_version"

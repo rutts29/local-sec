@@ -1,0 +1,205 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Roadmap — local-sec</title>
+<meta name="description" content="local-sec product roadmap: shipped capabilities, host-safety guardrails, and what comes next." />
+<meta name="color-scheme" content="dark" />
+<meta name="theme-color" content="#07080a" />
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23ff7a1a' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M12 2 4 5v6c0 5 3.4 8.5 8 11 4.6-2.5 8-6 8-11V5l-8-3Z'/%3E%3Cpath d='m8.5 12 2.5 2.5 4.5-4.5'/%3E%3C/svg%3E" />
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,700;12..96,800&family=Hanken+Grotesk:wght@400;500;600;700&family=Instrument+Serif:ital@0;1&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="site.css" />
+</head>
+<body>
+  <div class="atmos" aria-hidden="true"><div class="glow"></div><div class="grid"></div></div>
+  <div class="vignette" aria-hidden="true"></div>
+
+  <nav class="bar">
+    <div class="nav">
+      <a class="brand" href="index.html" aria-label="local-sec home">
+        <span class="ch">❯</span><span class="nm">local-sec</span><span class="vr">v0.1.0</span>
+      </a>
+      <div class="nav-links">
+        <a href="index.html#how">How it works</a>
+        <a href="index.html#features">Features</a>
+        <a href="docs.html">Docs</a>
+        <a href="roadmap.html" class="is-active">Roadmap</a>
+      </div>
+      <a class="nav-cta" href="index.html#install">Install <span class="arr">→</span></a>
+    </div>
+  </nav>
+
+  <header class="page-hero">
+    <div class="wrap">
+      <div class="page-kick">Roadmap</div>
+      <h1>Sequenced around host safety.</h1>
+      <p class="lede">Capabilities ship only when they keep the fail-closed bar. Deterministic policy always keeps final authority — even when sandboxes or models join later.</p>
+    </div>
+  </header>
+
+  <div class="wrap layout">
+    <aside class="toc glass tight">
+      <div class="lbl">On this page</div>
+      <a href="#guardrails">Guardrails</a>
+      <a href="#next">Next up</a>
+      <a href="#shipped">Shipped</a>
+      <a href="#testing">Outside testing</a>
+    </aside>
+
+    <article class="prose">
+      <section id="guardrails">
+        <h2>Safety guardrails</h2>
+        <p>These constraints apply to every phase — present and future:</p>
+        <ul>
+          <li>Never execute a malicious or suspected-malicious package on the host.</li>
+          <li>Never mount or forward a real home directory, personal files, secrets, shell history, cloud credentials, or agent transcripts into sandboxes, models, or approval messages.</li>
+          <li>Local Docker testing stays limited to harmless fixtures unless there is explicit approval for broader samples.</li>
+          <li>Dynamic malicious-package testing is deferred to disposable remote, VPS, or Mac VM environments built for detonation.</li>
+          <li>LLM review receives redacted evidence only. It may escalate risk or summarize — it cannot downgrade a deterministic block.</li>
+          <li>Local model experiments stay evidence-only; no raw secrets, host paths, or live detonation data go to a model.</li>
+        </ul>
+      </section>
+
+      <section id="next">
+        <h2>Next up</h2>
+        <p>Product focus from here is real-world hardening and safer dynamic analysis — not relaxing the host-safety bar.</p>
+        <div class="status-list">
+          <div class="status-row next glass tight">
+            <div class="st">→</div>
+            <div>
+              <h3>Richer field validation</h3>
+              <p>Multi-manager installs on real hosts, offline npm cache paths, clean-machine release packaging.</p>
+            </div>
+            <span class="state">in progress</span>
+          </div>
+          <div class="status-row next glass tight">
+            <div class="st">→</div>
+            <div>
+              <h3>Controlled detonation in the wild</h3>
+              <p>Disposable remote / VPS / Mac VM runners consuming the existing job contracts — never on a real home directory.</p>
+            </div>
+            <span class="state">next</span>
+          </div>
+          <div class="status-row next glass tight">
+            <div class="st">→</div>
+            <div>
+              <h3>Operator experience</h3>
+              <p>Model quality for local review, Discord ops, optional scan-tool matrices on clean machines.</p>
+            </div>
+            <span class="state">next</span>
+          </div>
+        </div>
+      </section>
+
+      <section id="shipped">
+        <h2>Already shipped</h2>
+        <p>The local-first baseline is coded. Outside testing continues where noted.</p>
+        <div class="status-list">
+          <div class="status-row done glass tight">
+            <div class="st">✓</div>
+            <div>
+              <h3>Install guard</h3>
+              <p>Preflight and guard for npm, pip, uv, curl/wget, mature-version selection, staging, static scan, advisories, exact approvals.</p>
+            </div>
+            <span class="state">shipped</span>
+          </div>
+          <div class="status-row done glass tight">
+            <div class="st">✓</div>
+            <div>
+              <h3>Local intelligence</h3>
+              <p>Recursive npm staging, offline cache promotion, local history and reputation signals.</p>
+            </div>
+            <span class="state">shipped</span>
+          </div>
+          <div class="status-row done glass tight">
+            <div class="st">✓</div>
+            <div>
+              <h3>Metadata scan</h3>
+              <p>Privacy-first inventory scanner with optional OSV and external advisory tools when present.</p>
+            </div>
+            <span class="state">shipped</span>
+          </div>
+          <div class="status-row done glass tight">
+            <div class="st">✓</div>
+            <div>
+              <h3>Sandbox &amp; evidence control planes</h3>
+              <p>Docker fixture path, remote-sandbox prepare/submit contracts, redacted evidence bundles.</p>
+            </div>
+            <span class="state">shipped</span>
+          </div>
+          <div class="status-row done glass tight">
+            <div class="st">✓</div>
+            <div>
+              <h3>LLM analyst (local)</h3>
+              <p>Redacted evidence review via loopback Ollama — escalate-only, cache-backed, never overrides a hard block.</p>
+            </div>
+            <span class="state">shipped</span>
+          </div>
+          <div class="status-row done glass tight">
+            <div class="st">✓</div>
+            <div>
+              <h3>Notifications &amp; inbox</h3>
+              <p>Local review inbox/outbox with optional Discord webhook for redacted summaries.</p>
+            </div>
+            <span class="state">shipped</span>
+          </div>
+          <div class="status-row done glass tight">
+            <div class="st">✓</div>
+            <div>
+              <h3>Optional SBOM &amp; endpoint hooks</h3>
+              <p>Integrations for tools like grype, syft, pip-audit, cargo-vet when already installed — missing tools do not weaken core policy.</p>
+            </div>
+            <span class="state">shipped</span>
+          </div>
+          <div class="status-row done glass tight">
+            <div class="st">✓</div>
+            <div>
+              <h3>macOS detonation contract</h3>
+              <p>Fixture job/result contract and local fixture runner. Real disposable VM execution is external.</p>
+            </div>
+            <span class="state">shipped</span>
+          </div>
+        </div>
+      </section>
+
+      <section id="testing">
+        <h2>Outside testing checklist</h2>
+        <p>Still validating against real operator environments:</p>
+        <ol>
+          <li>Host npm offline install with multi-dependency staged cache on real npm versions</li>
+          <li>Docker fixture image and daemon on clean machines</li>
+          <li>Optional scan tools: osv-scanner, pip-audit, grype, syft, cargo-vet</li>
+          <li>Local Ollama models for review quality</li>
+          <li>Discord webhook delivery for redacted notifications</li>
+          <li>External macOS VM runner consuming job JSON and emitting result JSON</li>
+          <li>Full release packaging on a clean git commit</li>
+        </ol>
+      </section>
+
+      <div class="page-cta glass">
+        <p>Start with the local baseline — the guard works today.</p>
+        <div class="row">
+          <a class="btn btn-primary" href="index.html#install">Install local-sec</a>
+          <a class="btn btn-ghost" href="docs.html">Read the docs <span class="arr">→</span></a>
+        </div>
+      </div>
+    </article>
+  </div>
+
+  <footer>
+    <div class="wrap foot">
+      <a class="brand" href="index.html"><span class="ch">❯</span><span class="nm">local-sec</span></a>
+      <div class="foot-links">
+        <a href="index.html#install">Install</a>
+        <a href="docs.html">Docs</a>
+        <a href="roadmap.html">Roadmap</a>
+        <a href="index.html#faq">FAQ</a>
+      </div>
+      <div class="foot-meta">v0.1.0 · single binary</div>
+    </div>
+  </footer>
+</body>
+</html>

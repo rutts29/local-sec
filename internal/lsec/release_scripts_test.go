@@ -81,6 +81,35 @@ func TestVerifyReleaseArtifactsFailsWhenArchiveContainsUnexpectedEntry(t *testin
 	}
 }
 
+func TestVerifyReleaseArtifactsRejectsAppleDoubleMember(t *testing.T) {
+	root := repoRootForTest(t)
+	dist := t.TempDir()
+	for _, target := range releaseTargetsForTest() {
+		name := "lsec_0.1.0_" + target
+		binary := "lsec"
+		if target == "windows_amd64" {
+			binary = "lsec.exe"
+		}
+		files := releaseFilesForTest(name, binary)
+		if target == "darwin_arm64" {
+			files[name+"/docs/._roadmap.md"] = "appledouble metadata"
+		}
+		writeReleaseArchive(t, dist, name, files)
+	}
+	writeChecksums(t, dist)
+
+	cmd := exec.Command("sh", filepath.Join(root, "scripts", "verify-release-artifacts.sh"))
+	cmd.Dir = root
+	cmd.Env = append(os.Environ(), "DIST="+dist, "VERSION=0.1.0")
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatal("verify-release-artifacts accepted an AppleDouble member")
+	}
+	if !strings.Contains(string(out), "contains AppleDouble archive member") {
+		t.Fatalf("verify-release-artifacts did not report the AppleDouble member:\n%s", out)
+	}
+}
+
 func TestVerifyReleaseArtifactsFailsWhenArchiveContainsDuplicateAllowedMember(t *testing.T) {
 	root := repoRootForTest(t)
 	dist := t.TempDir()
@@ -761,6 +790,63 @@ func TestVerifyReleaseArtifactsFailsWhenArchiveMissingRoadmap(t *testing.T) {
 	}
 }
 
+func TestVerifyReleaseArtifactsFailsWhenArchiveMissingSecurityPolicy(t *testing.T) {
+	root := repoRootForTest(t)
+	dist := t.TempDir()
+	writeReleaseArchivesMissingPath(t, dist, "darwin_arm64", "SECURITY.md")
+	writeChecksums(t, dist)
+
+	cmd := exec.Command("sh", filepath.Join(root, "scripts", "verify-release-artifacts.sh"))
+	cmd.Dir = root
+	cmd.Env = append(os.Environ(), "DIST="+dist, "VERSION=0.1.0")
+	if err := cmd.Run(); err == nil {
+		t.Fatal("verify-release-artifacts succeeded when an archive was missing SECURITY.md")
+	}
+}
+
+func TestVerifyReleaseArtifactsFailsWhenArchiveMissingThreatModel(t *testing.T) {
+	root := repoRootForTest(t)
+	dist := t.TempDir()
+	writeReleaseArchivesMissingPath(t, dist, "darwin_arm64", "docs/threat-model-and-limitations.md")
+	writeChecksums(t, dist)
+
+	cmd := exec.Command("sh", filepath.Join(root, "scripts", "verify-release-artifacts.sh"))
+	cmd.Dir = root
+	cmd.Env = append(os.Environ(), "DIST="+dist, "VERSION=0.1.0")
+	if err := cmd.Run(); err == nil {
+		t.Fatal("verify-release-artifacts succeeded when an archive was missing docs/threat-model-and-limitations.md")
+	}
+}
+
+func TestVerifyReleaseArtifactsFailsWhenReadmeLinkedMemberIsMissing(t *testing.T) {
+	root := repoRootForTest(t)
+	dist := t.TempDir()
+	for _, target := range releaseTargetsForTest() {
+		name := "lsec_0.1.0_" + target
+		binary := "lsec"
+		if target == "windows_amd64" {
+			binary = "lsec.exe"
+		}
+		files := releaseFilesForTest(name, binary)
+		if target == "linux_amd64" {
+			files[name+"/README.md"] = "See [missing file](docs/missing.md).\n"
+		}
+		writeReleaseArchive(t, dist, name, files)
+	}
+	writeChecksums(t, dist)
+
+	cmd := exec.Command("sh", filepath.Join(root, "scripts", "verify-release-artifacts.sh"))
+	cmd.Dir = root
+	cmd.Env = append(os.Environ(), "DIST="+dist, "VERSION=0.1.0")
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatal("verify-release-artifacts succeeded when README.md linked a missing member")
+	}
+	if !strings.Contains(string(out), "README.md links to missing archive member") {
+		t.Fatalf("verify-release-artifacts did not report the missing README.md link:\n%s", out)
+	}
+}
+
 func TestVerifyReleaseArtifactsFailsWhenRequiredDocIsDirectory(t *testing.T) {
 	root := repoRootForTest(t)
 	dist := t.TempDir()
@@ -837,10 +923,12 @@ func releaseTargetsForTest() []string {
 
 func releaseFilesForTest(name, binary string) map[string]string {
 	files := map[string]string{
-		name + "/README.md":                  "readme",
-		name + "/VERSION":                    "0.1.0\n",
-		name + "/docs/technical-overview.md": "technical overview",
-		name + "/docs/roadmap.md":            "roadmap",
+		name + "/README.md":                            "See [security](SECURITY.md), [overview](docs/technical-overview.md), [threat model](docs/threat-model-and-limitations.md), and [roadmap](docs/roadmap.md).\n",
+		name + "/SECURITY.md":                          "security policy",
+		name + "/VERSION":                              "0.1.0\n",
+		name + "/docs/technical-overview.md":           "technical overview",
+		name + "/docs/roadmap.md":                      "roadmap",
+		name + "/docs/threat-model-and-limitations.md": "threat model",
 	}
 	if binary != "" {
 		files[name+"/"+binary] = "binary"

@@ -38,7 +38,7 @@ lsec doctor
 lsec status
 ```
 
-See [docs/technical-overview.md](docs/technical-overview.md) for the full command list, scanner details, verdict policy, and release notes.
+See [docs/technical-overview.md](docs/technical-overview.md) for the full command list, scanner details, verdict policy, and release notes. Read the [threat model and limitations](docs/threat-model-and-limitations.md) before relying on a verdict, and use [SECURITY.md](SECURITY.md) to report vulnerabilities.
 
 ## Scanner
 

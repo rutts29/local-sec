@@ -1,4 +1,5 @@
 dist/
+.DS_Store
 .aikido-*
 .aikido-opengrep-scan/
 .playwright-mcp/
