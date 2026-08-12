@@ -49,7 +49,7 @@ lsec approvals revoke <ecosystem> <name> <version> [64-hex-sha256]
 - Treats npm dist-tags and ranges such as `@latest`, `@next`, and `@^1.2.3` as unresolved requests so they flow through mature-version selection.
 - Maps `npm init`, `npm create`, and `npm innit` initializers to the actual `create-*` package that npm will execute, then rewrites approved runs to `npm exec <create-package>@<selected-version>`.
 - For one-shot execution, reads package identity from `npx` / `npm exec` `--package` / `-p` flags, `uvx` / `uv tool run` `--from` flags, and `pipx run --spec` instead of auditing the command name.
-- Stages artifacts in `~/.local-sec/staging/<run-id>/`.
+- Stages artifacts for supported npm, pip, and downloader paths in `~/.local-sec/staging/<run-id>/`.
 - Uses recursive npm lockfile-only staging plus registry tarball downloads, or recursive wheel-only `pip download`, for pre-install artifact capture.
 - Runs package-manager staging with a per-run fake `HOME`, config, and cache directories under the staging directory.
 - For `python -m pip` and versioned Python interpreter shims, runs wheel-only staging through the same Python executable that the final install will use.
@@ -60,7 +60,8 @@ lsec approvals revoke <ecosystem> <name> <version> [64-hex-sha256]
 - When an approved `curl` or `wget` download is staged, `guard` streams the staged bytes to stdout instead of re-running the downloader; reports and prompts go to stderr so stdout remains safe for the approved payload.
 - Python wheelhouses with resolved dependency wheels are installed with `--no-index --find-links`, so pip can satisfy dependencies only from staged, scanned wheels.
 - Strict pinned and SHA256-hashed Python requirements files, including pip-compile style hash continuations, are parsed, downloaded wheel-only with dependencies using `--require-hashes`, advisory-checked package-by-package and artifact-by-artifact, and installed from the staged wheelhouse with `--require-hashes --no-index --find-links`.
-- Bare project `npm install` is allowed only with an auditable `package-lock.json`; exact locked packages with integrity are maturity-checked and advisory-checked, then `guard` rewrites to `npm ci --ignore-scripts`.
+- Bare project `npm install` is allowed only with an auditable `package-lock.json`; exact locked packages with integrity are maturity-checked and advisory-checked, then `guard` rewrites to `npm ci --ignore-scripts` without artifact staging.
+- `npx`, `uvx`, and `pipx run` one-shot paths do not receive artifact staging yet; they surface a deferred-staging finding for review, while unsupported install forms are blocked.
 - Exact package specs from pinned and hashed Python requirements files and npm lockfiles are maturity-checked and advisory-checked before requirements wheel staging or npm lockfile execution continues.
 - Queries OSV for the selected package/version, exact dependency versions discovered in staged metadata, and every exact package/version identified from staged npm/PyPI artifacts.
 - If the newest mature candidate has an advisory and only a too-new clean candidate remains, selects the fresh clean candidate into the risky lane instead of silently holding the known-vulnerable version.
@@ -121,7 +122,7 @@ Privacy and safety defaults:
 
 `lsec sandbox run --mode docker-fixture [--docker PATH] -- <command> ...` runs a harmless fixture command through the existing Docker fixture sandbox and prints a redacted `SandboxResult` JSON document to stdout. The `--` separator is required before the fixture command. `--mode docker-fixture` is the only supported mode, and `--docker PATH` exists so tests and operators can point at a fake or controlled Docker executable.
 
-This CLI is a fixture path only. It is not wired into `preflight` or `guard`, and it is not a malicious-package detonation workflow.
+This CLI is a fixture path only. With `LSEC_DOCKER_FIXTURE_PREFLIGHT=1`, `preflight` can attach a harmless `true` fixture command for eligible runs; it does not execute the staged artifact and is not a malicious-package detonation workflow.
 
 ## Phase 4 remote sandbox control plane
 
@@ -203,16 +204,21 @@ Phase 1 intentionally refuses `npm install a b c` because ad hoc batch installs 
 
 Socket and Snyk are optional advisory amplifiers, not the enforcement core. When their CLIs are present, `local-sec` treats critical or malware findings as policy-blocking advisories and treats lower-severity findings as prompts. If an installed Socket or Snyk check fails without parseable advisory output, the run fails closed. Missing optional CLIs are reported by `lsec doctor`; they do not disable OSV fail-closed checks. Persistent approvals are exact package/version/hash records with lowercase 64-hex SHA256 hashes; adding the same exact record updates it instead of duplicating it. `preflight` prints staged artifact hashes so an approval cannot silently cover different bytes. `lsec approvals suggest <run_id>` refuses blocked runs, so known-malware or hard-policy failures do not produce allowlist commands. For staged installs with dependency wheels, every staged artifact must have its own exact approval before persistent approvals can turn a prompt into an allow.
 
-## Later phases
+## Local control planes and remaining work
 
-The repo exposes secret-free evidence bundles for handoff into container detonation, canary analysis, and LLM review. Each bundle includes a stable `evidence_sha256` computed over the bundle contents, excluding the hash field itself, so later sandbox and LLM decisions can be cached against the exact evidence reviewed.
+The repo implements local, fixture, and control-plane commands for redacted evidence handoff. Each evidence bundle includes a stable `evidence_sha256` computed over its contents, excluding the hash field itself, so sandbox and LLM decisions can be cached against the exact evidence reviewed.
 
-Planned layers:
+Implemented locally, with the limits documented above:
 
-- container detonation for risky packages
-- fake-home canaries and network sinkhole/proxy capture
-- LLM evidence review with deterministic scanners retaining final authority
-- Discord notifications for local inbox events keyed by `run_id`
+- Docker fixture sandbox commands and remote-sandbox prepare/submit contracts; the optional preflight fixture attachment runs a harmless command rather than the package, and neither path is real malicious-package detonation.
+- Redacted, loopback-only Ollama evidence review with cache-backed, escalate-only decisions; it cannot clear a deterministic block.
+- Local notification planning and inbox/outbox bookkeeping, plus optional Discord delivery of a redacted summary; Discord is never the policy authority.
+
+Still planned or awaiting external validation:
+
+- actual container detonation for risky packages, fake-home canaries, and network sinkhole/proxy capture
+- real remote worker transport and disposable VPS or Mac VM execution
+- operator-machine model-quality and live Discord webhook validation
 - broader endpoint and SBOM integrations such as Bumblebee, Syft, cargo-vet, deeper OSV-Scanner coverage beyond the current npm-lockfile advisory hook, and SBOM or endpoint workflows beyond the current optional `grype` SBOM provider and optional `pip-audit` requirements provider
 
 ## Release model

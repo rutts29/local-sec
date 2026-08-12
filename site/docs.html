@@ -36,7 +36,7 @@
     <div class="wrap">
       <div class="page-kick">Documentation</div>
       <h1>Use local-sec without guesswork.</h1>
-      <p class="lede">Install the binary, enable shims, and let every guarded package command run the gauntlet before it touches your machine.</p>
+      <p class="lede">Install the binary, add the shim directory to your PATH, and use supported package commands with clear review boundaries.</p>
     </div>
   </header>
 
@@ -55,13 +55,13 @@
     <article class="prose">
       <section id="overview">
         <h2>Overview</h2>
-        <p>local-sec is a local-first supply-chain guard for developer installs. It sits in front of package tools, stages the real package bytes, scans them, checks advisories, then returns one of three lanes:</p>
+        <p>local-sec is a local-first supply-chain guard for developer installs. For supported artifact paths, it stages the package bytes, scans them, checks advisories, then returns one of three lanes:</p>
         <div class="pill-row">
           <span class="pill ok">trusted</span>
           <span class="pill warn">risky</span>
           <span class="pill bad">blocked</span>
         </div>
-        <p>It runs as a single binary on your machine. There is no SaaS agent and no product telemetry. Optional advisory lookups send only package name and version tuples.</p>
+        <p>Project lockfile installs use an audited rewrite without artifact staging; one-shot paths can defer staging for review or be blocked. It runs as a single binary on your machine. There is no SaaS agent and no product telemetry. Optional advisory lookups send only package name and version tuples.</p>
       </section>
 
       <section id="install">
@@ -72,9 +72,9 @@
         <p>Extract the archive and place the <code>lsec</code> binary somewhere on your <code>PATH</code>.</p>
         <h3>3. Install shims</h3>
         <div class="cmd-block"><span class="p">$</span> lsec install-shims</div>
-        <p>Shims sit ahead of the real package tools so installs are intercepted. Confirm with:</p>
+        <p><code>lsec install-shims</code> writes shims and tells you which directory to add before package-manager directories in your <code>PATH</code>. Make that PATH change yourself, then confirm with:</p>
         <div class="cmd-block"><span class="p">$</span> lsec doctor</div>
-        <p>After that, keep using <code>npm</code>, <code>pip</code>, <code>uv</code>, <code>curl</code>, and the rest as usual.</p>
+        <p>After that, use supported <code>npm</code>, <code>pip</code>, <code>uv</code>, <code>curl</code>, and related commands as usual.</p>
         <div class="pill-row">
           <span class="pill">npm</span><span class="pill">npx</span><span class="pill">pip</span><span class="pill">pip3</span>
           <span class="pill">uv</span><span class="pill">uvx</span><span class="pill">pipx</span><span class="pill">curl</span><span class="pill">wget</span>
@@ -93,7 +93,7 @@ lsec inbox [limit]
 lsec approvals list
 lsec scan --profile project --root .
 lsec evidence npm install &lt;package&gt;</div>
-        <p><code>guard</code> is the path shims use — stage, scan, advisory-check, then allow, prompt, or block. <code>preflight</code> runs the same pipeline without completing a real install when you only want the report.</p>
+        <p>For supported staged paths, <code>guard</code> stages, scans, advisory-checks, then allows, prompts, or blocks. Lockfile installs use an audited rewrite instead; one-shot paths can defer staging for review or be blocked. <code>preflight</code> reports the applicable path without completing a real install.</p>
         <p>Useful review commands:</p>
         <div class="cmd-block">lsec history [limit]
 lsec packages [limit]
@@ -124,7 +124,7 @@ lsec approvals add &lt;ecosystem&gt; &lt;name&gt; &lt;version&gt; &lt;sha256&gt;
           </div>
         </div>
         <h3>Pipeline</h3>
-        <p>Every guarded install walks the same path:</p>
+        <p>Supported staged installs walk this path:</p>
         <div class="cmd-block">preflight → stage → scan → advisory → verdict</div>
       </section>
 

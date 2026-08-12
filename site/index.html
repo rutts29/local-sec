@@ -4,7 +4,7 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>local-sec — package installs, checked before they run</title>
-<meta name="description" content="local-sec intercepts npm, pip, uv, curl, and more before they touch your machine. Stages the real package, scans it, checks advisories, then returns trusted, risky, or blocked — locally, fail-closed, no telemetry." />
+<meta name="description" content="local-sec evaluates supported npm, pip, uv, curl, and more before the requested install runs. It stages supported artifact paths, scans them, checks advisories, then returns trusted, risky, or blocked — locally, fail-closed, no telemetry." />
 <meta name="color-scheme" content="dark" />
 <meta name="theme-color" content="#07080a" />
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23ff7a1a' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M12 2 4 5v6c0 5 3.4 8.5 8 11 4.6-2.5 8-6 8-11V5l-8-3Z'/%3E%3Cpath d='m8.5 12 2.5 2.5 4.5-4.5'/%3E%3C/svg%3E" />
@@ -12,7 +12,7 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,700;12..96,800&family=Hanken+Grotesk:wght@400;500;600;700&family=Instrument+Serif:ital@0;1&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
 <meta property="og:title" content="local-sec — package installs, checked before they run" />
-<meta property="og:description" content="A local-first supply-chain guard for developer installs. Stages, scans, and advisory-checks packages — then trusted, risky, or blocked. Fail-closed, no telemetry." />
+<meta property="og:description" content="A local-first supply-chain guard for developer installs. It stages supported artifact paths, scans, and advisory-checks — then trusted, risky, or blocked. Fail-closed, no telemetry." />
 <meta property="og:type" content="website" />
 <style>
   :root {
@@ -419,8 +419,8 @@
       <div class="hero-grid">
         <div class="hero-text">
           <div class="kicker reveal"><span class="pulse"></span> SUPPLY-CHAIN GUARD <span class="bar-sep">/</span> LOCAL-FIRST</div>
-          <h1 class="display reveal d1">Every install runs the <em>gauntlet</em> before it reaches you.</h1>
-          <p class="lede reveal d2">local-sec sits in front of your package tools. It stages the real install, scans it, checks advisories, then returns <strong style="color:var(--trusted);font-weight:600">trusted</strong>, <strong style="color:var(--risky);font-weight:600">risky</strong>, or <strong style="color:var(--block);font-weight:600">blocked</strong> — on your machine, with no SaaS agent in the loop.</p>
+          <h1 class="display reveal d1">Supported installs run the <em>gauntlet</em> before they reach you.</h1>
+          <p class="lede reveal d2">local-sec sits in front of your package tools. For supported artifact paths, it stages the package, scans it, checks advisories, then returns <strong style="color:var(--trusted);font-weight:600">trusted</strong>, <strong style="color:var(--risky);font-weight:600">risky</strong>, or <strong style="color:var(--block);font-weight:600">blocked</strong>. Project lockfile installs use an audited rewrite without artifact staging; one-shot paths can defer staging for review or be blocked.</p>
           <div class="cta-row reveal d3">
             <a class="btn btn-primary" href="#install">Install local-sec</a>
             <a class="btn btn-ghost" id="hero-github" href="https://github.com/rutts29/local-sec" target="_blank" rel="noopener">View on GitHub <span class="arr">↗</span></a>
@@ -456,7 +456,7 @@
       <div class="sec-head reveal">
         <div class="sec-kick">01 — How it works</div>
         <h2 class="sec-title">Three lanes. One honest verdict.</h2>
-        <p class="sec-sub">Every install gets exactly one decision, logged on your machine. When it’s unsure, it blocks instead of allowing.</p>
+        <p class="sec-sub">Each guarded request gets one decision, logged on your machine. When it’s unsure, it blocks instead of allowing.</p>
       </div>
       <div class="pipe reveal" style="margin-top:0;margin-bottom:32px">
         <span class="step">preflight</span><span class="arr">→</span>
@@ -477,7 +477,7 @@
     <div class="wrap">
       <div class="sec-head reveal">
         <div class="sec-kick">02 — What it does</div>
-        <h2 class="sec-title">What happens before every install.</h2>
+        <h2 class="sec-title">What happens on a supported, stageable install.</h2>
         <p class="sec-sub">Four capabilities that keep the guard strict without getting in the way when the path is clean.</p>
       </div>
 
@@ -556,13 +556,13 @@
         <div class="step-card glass sheen reveal d1">
           <div class="num">STEP 02</div>
           <h3>Install shims</h3>
-          <p>Put <code>lsec</code> on your <code>PATH</code>, then enable guards for your package tools.</p>
+          <p>Run the command, then add its printed shim directory before package-manager directories in your <code>PATH</code>.</p>
           <span class="cmd"><span class="p">$</span> lsec install-shims</span>
         </div>
         <div class="step-card glass sheen reveal d2">
           <div class="num">STEP 03</div>
           <h3>Install as usual</h3>
-          <p>Keep using npm, pip, uv, curl, and the rest. Guards surface risk before packages run.</p>
+          <p>Use supported npm, pip, uv, curl, and related commands. Guards surface risk before the requested install runs.</p>
           <span class="cmd"><span class="p">$</span> npm install &lt;package&gt;</span>
         </div>
       </div>

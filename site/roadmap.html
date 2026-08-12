@@ -4,7 +4,7 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>Roadmap — local-sec</title>
-<meta name="description" content="local-sec product roadmap: shipped capabilities, host-safety guardrails, and what comes next." />
+<meta name="description" content="local-sec product roadmap: implemented local capabilities, host-safety guardrails, and what comes next." />
 <meta name="color-scheme" content="dark" />
 <meta name="theme-color" content="#07080a" />
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23ff7a1a' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M12 2 4 5v6c0 5 3.4 8.5 8 11 4.6-2.5 8-6 8-11V5l-8-3Z'/%3E%3Cpath d='m8.5 12 2.5 2.5 4.5-4.5'/%3E%3C/svg%3E" />
@@ -36,7 +36,7 @@
     <div class="wrap">
       <div class="page-kick">Roadmap</div>
       <h1>Sequenced around host safety.</h1>
-      <p class="lede">Capabilities ship only when they keep the fail-closed bar. Deterministic policy always keeps final authority — even when sandboxes or models join later.</p>
+      <p class="lede">Capabilities are marked implemented when local code and tests cover them. Deterministic policy always keeps final authority — and field validation stays explicit.</p>
     </div>
   </header>
 
@@ -45,7 +45,7 @@
       <div class="lbl">On this page</div>
       <a href="#guardrails">Guardrails</a>
       <a href="#next">Next up</a>
-      <a href="#shipped">Shipped</a>
+      <a href="#implemented">Implemented</a>
       <a href="#testing">Outside testing</a>
     </aside>
 
@@ -94,17 +94,17 @@
         </div>
       </section>
 
-      <section id="shipped">
-        <h2>Already shipped</h2>
-        <p>The local-first baseline is coded. Outside testing continues where noted.</p>
+      <section id="implemented">
+        <h2>Implemented locally</h2>
+        <p>These commands and control planes are covered by local code and tests. Outside testing continues where noted.</p>
         <div class="status-list">
           <div class="status-row done glass tight">
             <div class="st">✓</div>
             <div>
               <h3>Install guard</h3>
-              <p>Preflight and guard for npm, pip, uv, curl/wget, mature-version selection, staging, static scan, advisories, exact approvals.</p>
+              <p>Preflight and guard for npm, pip, uv, curl/wget, supported artifact staging, mature-version selection, static scan, advisories, exact approvals.</p>
             </div>
-            <span class="state">shipped</span>
+            <span class="state">implemented</span>
           </div>
           <div class="status-row done glass tight">
             <div class="st">✓</div>
@@ -112,7 +112,7 @@
               <h3>Local intelligence</h3>
               <p>Recursive npm staging, offline cache promotion, local history and reputation signals.</p>
             </div>
-            <span class="state">shipped</span>
+            <span class="state">implemented</span>
           </div>
           <div class="status-row done glass tight">
             <div class="st">✓</div>
@@ -120,31 +120,31 @@
               <h3>Metadata scan</h3>
               <p>Privacy-first inventory scanner with optional OSV and external advisory tools when present.</p>
             </div>
-            <span class="state">shipped</span>
+            <span class="state">implemented</span>
           </div>
           <div class="status-row done glass tight">
             <div class="st">✓</div>
             <div>
               <h3>Sandbox &amp; evidence control planes</h3>
-              <p>Docker fixture path, remote-sandbox prepare/submit contracts, redacted evidence bundles.</p>
+              <p>Docker fixture path, remote-sandbox prepare/submit contracts, redacted evidence bundles. Optional preflight fixture checks run a harmless command, not the package; this is not a real detonation runner.</p>
             </div>
-            <span class="state">shipped</span>
+            <span class="state">implemented</span>
           </div>
           <div class="status-row done glass tight">
             <div class="st">✓</div>
             <div>
               <h3>LLM analyst (local)</h3>
-              <p>Redacted evidence review via loopback Ollama — escalate-only, cache-backed, never overrides a hard block.</p>
+              <p>Redacted evidence review via loopback Ollama — escalate-only, cache-backed, never overrides a hard block. Operator-machine model quality remains outside testing.</p>
             </div>
-            <span class="state">shipped</span>
+            <span class="state">implemented</span>
           </div>
           <div class="status-row done glass tight">
             <div class="st">✓</div>
             <div>
               <h3>Notifications &amp; inbox</h3>
-              <p>Local review inbox/outbox with optional Discord webhook for redacted summaries.</p>
+              <p>Local review inbox/outbox with optional Discord webhook for redacted summaries. Live webhook delivery remains outside testing.</p>
             </div>
-            <span class="state">shipped</span>
+            <span class="state">implemented</span>
           </div>
           <div class="status-row done glass tight">
             <div class="st">✓</div>
@@ -152,7 +152,7 @@
               <h3>Optional SBOM &amp; endpoint hooks</h3>
               <p>Integrations for tools like grype, syft, pip-audit, cargo-vet when already installed — missing tools do not weaken core policy.</p>
             </div>
-            <span class="state">shipped</span>
+            <span class="state">implemented</span>
           </div>
           <div class="status-row done glass tight">
             <div class="st">✓</div>
@@ -160,7 +160,7 @@
               <h3>macOS detonation contract</h3>
               <p>Fixture job/result contract and local fixture runner. Real disposable VM execution is external.</p>
             </div>
-            <span class="state">shipped</span>
+            <span class="state">implemented</span>
           </div>
         </div>
       </section>
