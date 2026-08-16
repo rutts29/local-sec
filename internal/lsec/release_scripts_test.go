@@ -81,35 +81,6 @@ func TestVerifyReleaseArtifactsFailsWhenArchiveContainsUnexpectedEntry(t *testin
 	}
 }
 
-func TestVerifyReleaseArtifactsRejectsAppleDoubleMember(t *testing.T) {
-	root := repoRootForTest(t)
-	dist := t.TempDir()
-	for _, target := range releaseTargetsForTest() {
-		name := "lsec_0.1.0_" + target
-		binary := "lsec"
-		if target == "windows_amd64" {
-			binary = "lsec.exe"
-		}
-		files := releaseFilesForTest(name, binary)
-		if target == "darwin_arm64" {
-			files[name+"/docs/._roadmap.md"] = "appledouble metadata"
-		}
-		writeReleaseArchive(t, dist, name, files)
-	}
-	writeChecksums(t, dist)
-
-	cmd := exec.Command("sh", filepath.Join(root, "scripts", "verify-release-artifacts.sh"))
-	cmd.Dir = root
-	cmd.Env = append(os.Environ(), "DIST="+dist, "VERSION=0.1.0")
-	out, err := cmd.CombinedOutput()
-	if err == nil {
-		t.Fatal("verify-release-artifacts accepted an AppleDouble member")
-	}
-	if !strings.Contains(string(out), "contains AppleDouble archive member") {
-		t.Fatalf("verify-release-artifacts did not report the AppleDouble member:\n%s", out)
-	}
-}
-
 func TestVerifyReleaseArtifactsFailsWhenArchiveContainsDuplicateAllowedMember(t *testing.T) {
 	root := repoRootForTest(t)
 	dist := t.TempDir()
@@ -231,23 +202,6 @@ func TestVerifyReleaseArtifactsFailsWhenUnlistedArchiveExists(t *testing.T) {
 	cmd.Env = append(os.Environ(), "DIST="+dist, "VERSION=0.1.0")
 	if err := cmd.Run(); err == nil {
 		t.Fatal("verify-release-artifacts succeeded when an unlisted archive existed in DIST")
-	}
-}
-
-func TestVerifyReleaseArtifactsFailsWhenHiddenArchiveExists(t *testing.T) {
-	root := repoRootForTest(t)
-	dist := t.TempDir()
-	writeValidReleaseArchives(t, dist)
-	if err := os.WriteFile(filepath.Join(dist, ".hidden.tar.gz"), []byte("extra"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	writeChecksums(t, dist, ".hidden.tar.gz")
-
-	cmd := exec.Command("sh", filepath.Join(root, "scripts", "verify-release-artifacts.sh"))
-	cmd.Dir = root
-	cmd.Env = append(os.Environ(), "DIST="+dist, "VERSION=0.1.0")
-	if err := cmd.Run(); err == nil {
-		t.Fatal("verify-release-artifacts succeeded when a hidden archive existed in DIST")
 	}
 }
 
@@ -433,24 +387,6 @@ func TestVerifyReleaseArtifactsFailsWhenArchiveVersionIsNotNormalized(t *testing
 	}
 }
 
-func TestVerifyReleaseArtifactsRejectsInvalidVersionBeforeArchivePaths(t *testing.T) {
-	root := repoRootForTest(t)
-	dist := t.TempDir()
-	writeValidReleaseArchives(t, dist)
-	writeChecksums(t, dist)
-
-	cmd := exec.Command("sh", filepath.Join(root, "scripts", "verify-release-artifacts.sh"))
-	cmd.Dir = root
-	cmd.Env = append(os.Environ(), "DIST="+dist, "VERSION=1.2.3/evil")
-	out, err := cmd.CombinedOutput()
-	if err == nil {
-		t.Fatal("verify-release-artifacts accepted a path-shaped VERSION")
-	}
-	if !strings.Contains(string(out), "invalid version") {
-		t.Fatalf("verify-release-artifacts did not report invalid version:\n%s", out)
-	}
-}
-
 func TestVerifyReleaseArtifactsFailsWhenArchiveIsSymlink(t *testing.T) {
 	root := repoRootForTest(t)
 	dist := t.TempDir()
@@ -557,54 +493,7 @@ func TestBuildReleaseRejectsCurrentDirectoryAsDist(t *testing.T) {
 	}
 }
 
-func TestBuildReleaseRejectsUnsafeDistPaths(t *testing.T) {
-	root := repoRootForTest(t)
-	repoParent := filepath.Dir(root)
-	for _, tc := range []struct {
-		name string
-		dist string
-	}{
-		{name: "root", dist: "/"},
-		{name: "parent", dist: ".."},
-		{name: "repo_root", dist: root},
-		{name: "repo_parent", dist: repoParent},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			work := t.TempDir()
-			fakeBin := filepath.Join(work, "bin")
-			if err := os.Mkdir(fakeBin, 0o700); err != nil {
-				t.Fatal(err)
-			}
-			goCalled := filepath.Join(work, "go-called")
-			fakeGo := "#!/usr/bin/env sh\nprintf called > \"$GO_CALLED\"\nexit 1\n"
-			if err := os.WriteFile(filepath.Join(fakeBin, "go"), []byte(fakeGo), 0o700); err != nil {
-				t.Fatal(err)
-			}
-
-			cmd := exec.Command("sh", filepath.Join(root, "scripts", "build-release.sh"))
-			cmd.Dir = root
-			cmd.Env = append(os.Environ(),
-				"DIST="+tc.dist,
-				"GO_CALLED="+goCalled,
-				"LSEC_RELEASE_ALLOW_UNTAGGED=1",
-				"VERSION=0.1.0",
-				"PATH="+fakeBin+string(os.PathListSeparator)+os.Getenv("PATH"),
-			)
-			out, err := cmd.CombinedOutput()
-			if err == nil {
-				t.Fatalf("build-release accepted unsafe DIST %q", tc.dist)
-			}
-			if !strings.Contains(string(out), "unsafe DIST") {
-				t.Fatalf("build-release rejected DIST %q without unsafe DIST message:\n%s", tc.dist, out)
-			}
-			if _, err := os.Stat(goCalled); !os.IsNotExist(err) {
-				t.Fatalf("build-release ran go despite unsafe DIST %q: %v", tc.dist, err)
-			}
-		})
-	}
-}
-
-func TestBuildReleaseRefusesExistingDistBeforeBuilding(t *testing.T) {
+func TestBuildReleaseFailureLeavesPublishedDistUnchanged(t *testing.T) {
 	root := repoRootForTest(t)
 	work := t.TempDir()
 	dist := filepath.Join(work, "dist")
@@ -619,10 +508,22 @@ func TestBuildReleaseRefusesExistingDistBeforeBuilding(t *testing.T) {
 	if err := os.Mkdir(fakeBin, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	goCalled := filepath.Join(work, "go-called")
+	countFile := filepath.Join(work, "go-count")
 	fakeGo := `#!/usr/bin/env sh
-printf called > "$GO_CALLED"
-exit 1
+set -eu
+count=0
+if [ -f "$FAKE_GO_COUNT" ]; then count="$(cat "$FAKE_GO_COUNT")"; fi
+count=$((count + 1))
+printf '%s\n' "$count" > "$FAKE_GO_COUNT"
+output=""
+while [ "$#" -gt 0 ]; do
+  if [ "$1" = "-o" ]; then shift; output="$1"; fi
+  shift
+done
+mkdir -p "$(dirname "$output")"
+printf 'binary\n' > "$output"
+chmod 700 "$output"
+[ "$count" -eq 1 ]
 `
 	if err := os.WriteFile(filepath.Join(fakeBin, "go"), []byte(fakeGo), 0o700); err != nil {
 		t.Fatal(err)
@@ -632,20 +533,13 @@ exit 1
 	cmd.Dir = root
 	cmd.Env = append(os.Environ(),
 		"DIST="+dist,
-		"GO_CALLED="+goCalled,
+		"FAKE_GO_COUNT="+countFile,
 		"LSEC_RELEASE_ALLOW_UNTAGGED=1",
 		"VERSION=0.1.0",
 		"PATH="+fakeBin+string(os.PathListSeparator)+os.Getenv("PATH"),
 	)
-	out, err := cmd.CombinedOutput()
-	if err == nil {
-		t.Fatal("build-release accepted an existing DIST")
-	}
-	if !strings.Contains(string(out), "refusing to overwrite existing DIST") {
-		t.Fatalf("build-release did not report existing DIST refusal:\n%s", out)
-	}
-	if _, err := os.Stat(goCalled); !os.IsNotExist(err) {
-		t.Fatalf("build-release ran go despite existing DIST: %v", err)
+	if err := cmd.Run(); err == nil {
+		t.Fatal("build-release succeeded when the second Go build failed")
 	}
 	data, err := os.ReadFile(sentinel)
 	if err != nil {
@@ -662,103 +556,6 @@ exit 1
 		if strings.HasPrefix(entry.Name(), ".lsec-release.") {
 			t.Fatalf("build-release left private staging directory %q", entry.Name())
 		}
-	}
-}
-
-func TestBuildReleaseBuildFailureLeavesAbsentDistAbsent(t *testing.T) {
-	root := repoRootForTest(t)
-	work := t.TempDir()
-	dist := filepath.Join(work, "dist")
-	fakeBin := filepath.Join(work, "bin")
-	if err := os.Mkdir(fakeBin, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(fakeBin, "go"), []byte("#!/usr/bin/env sh\nexit 1\n"), 0o700); err != nil {
-		t.Fatal(err)
-	}
-
-	cmd := exec.Command("sh", filepath.Join(root, "scripts", "build-release.sh"))
-	cmd.Dir = root
-	cmd.Env = append(os.Environ(),
-		"DIST="+dist,
-		"LSEC_RELEASE_ALLOW_UNTAGGED=1",
-		"VERSION=0.1.0",
-		"PATH="+fakeBin+string(os.PathListSeparator)+os.Getenv("PATH"),
-	)
-	if err := cmd.Run(); err == nil {
-		t.Fatal("build-release succeeded when Go build failed")
-	}
-	if _, err := os.Stat(dist); !os.IsNotExist(err) {
-		t.Fatalf("build-release created DIST after failed build: %v", err)
-	}
-	entries, err := os.ReadDir(work)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, entry := range entries {
-		if strings.HasPrefix(entry.Name(), ".lsec-release.") {
-			t.Fatalf("build-release left private staging directory %q", entry.Name())
-		}
-	}
-}
-
-func TestBuildReleaseRejectsPathShapedVersionBeforeStaging(t *testing.T) {
-	root := repoRootForTest(t)
-	work := t.TempDir()
-	distParent := filepath.Join(work, "publish")
-	dist := filepath.Join(distParent, "dist")
-	if err := os.MkdirAll(distParent, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	fakeBin := filepath.Join(work, "bin")
-	if err := os.Mkdir(fakeBin, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(fakeBin, "go"), []byte("#!/usr/bin/env sh\nexit 1\n"), 0o700); err != nil {
-		t.Fatal(err)
-	}
-
-	cmd := exec.Command("sh", filepath.Join(root, "scripts", "build-release.sh"))
-	cmd.Dir = root
-	cmd.Env = append(os.Environ(),
-		"DIST="+dist,
-		"LSEC_RELEASE_ALLOW_UNTAGGED=1",
-		"VERSION=../../../../escaped/release",
-		"PATH="+fakeBin+string(os.PathListSeparator)+os.Getenv("PATH"),
-	)
-	out, err := cmd.CombinedOutput()
-	if err == nil {
-		t.Fatal("build-release accepted a path-shaped VERSION")
-	}
-	if !strings.Contains(string(out), "invalid version") {
-		t.Fatalf("build-release did not report invalid version:\n%s", out)
-	}
-	if _, err := os.Stat(filepath.Join(distParent, "escaped")); !os.IsNotExist(err) {
-		t.Fatalf("build-release created escaped staging path: %v", err)
-	}
-}
-
-func TestBuildReleaseRejectsInvalidNormalizedVersions(t *testing.T) {
-	root := repoRootForTest(t)
-	for _, version := range []string{
-		"1.2",
-		"1.2.3 bad",
-		"1.2.3/evil",
-		"1.2.3\n4",
-		"release-1.2.3",
-	} {
-		t.Run(strings.NewReplacer("\n", "newline", "/", "slash", " ", "space").Replace(version), func(t *testing.T) {
-			cmd := exec.Command("sh", filepath.Join(root, "scripts", "build-release.sh"))
-			cmd.Dir = root
-			cmd.Env = append(os.Environ(), "DIST="+filepath.Join(t.TempDir(), "dist"), "LSEC_RELEASE_ALLOW_UNTAGGED=1", "VERSION="+version)
-			out, err := cmd.CombinedOutput()
-			if err == nil {
-				t.Fatalf("build-release accepted invalid VERSION %q", version)
-			}
-			if !strings.Contains(string(out), "invalid version") {
-				t.Fatalf("build-release rejected VERSION %q without invalid version message:\n%s", version, out)
-			}
-		})
 	}
 }
 
@@ -787,63 +584,6 @@ func TestVerifyReleaseArtifactsFailsWhenArchiveMissingRoadmap(t *testing.T) {
 	cmd.Env = append(os.Environ(), "DIST="+dist, "VERSION=0.1.0")
 	if err := cmd.Run(); err == nil {
 		t.Fatal("verify-release-artifacts succeeded when an archive was missing docs/roadmap.md")
-	}
-}
-
-func TestVerifyReleaseArtifactsFailsWhenArchiveMissingSecurityPolicy(t *testing.T) {
-	root := repoRootForTest(t)
-	dist := t.TempDir()
-	writeReleaseArchivesMissingPath(t, dist, "darwin_arm64", "SECURITY.md")
-	writeChecksums(t, dist)
-
-	cmd := exec.Command("sh", filepath.Join(root, "scripts", "verify-release-artifacts.sh"))
-	cmd.Dir = root
-	cmd.Env = append(os.Environ(), "DIST="+dist, "VERSION=0.1.0")
-	if err := cmd.Run(); err == nil {
-		t.Fatal("verify-release-artifacts succeeded when an archive was missing SECURITY.md")
-	}
-}
-
-func TestVerifyReleaseArtifactsFailsWhenArchiveMissingThreatModel(t *testing.T) {
-	root := repoRootForTest(t)
-	dist := t.TempDir()
-	writeReleaseArchivesMissingPath(t, dist, "darwin_arm64", "docs/threat-model-and-limitations.md")
-	writeChecksums(t, dist)
-
-	cmd := exec.Command("sh", filepath.Join(root, "scripts", "verify-release-artifacts.sh"))
-	cmd.Dir = root
-	cmd.Env = append(os.Environ(), "DIST="+dist, "VERSION=0.1.0")
-	if err := cmd.Run(); err == nil {
-		t.Fatal("verify-release-artifacts succeeded when an archive was missing docs/threat-model-and-limitations.md")
-	}
-}
-
-func TestVerifyReleaseArtifactsFailsWhenReadmeLinkedMemberIsMissing(t *testing.T) {
-	root := repoRootForTest(t)
-	dist := t.TempDir()
-	for _, target := range releaseTargetsForTest() {
-		name := "lsec_0.1.0_" + target
-		binary := "lsec"
-		if target == "windows_amd64" {
-			binary = "lsec.exe"
-		}
-		files := releaseFilesForTest(name, binary)
-		if target == "linux_amd64" {
-			files[name+"/README.md"] = "See [missing file](docs/missing.md).\n"
-		}
-		writeReleaseArchive(t, dist, name, files)
-	}
-	writeChecksums(t, dist)
-
-	cmd := exec.Command("sh", filepath.Join(root, "scripts", "verify-release-artifacts.sh"))
-	cmd.Dir = root
-	cmd.Env = append(os.Environ(), "DIST="+dist, "VERSION=0.1.0")
-	out, err := cmd.CombinedOutput()
-	if err == nil {
-		t.Fatal("verify-release-artifacts succeeded when README.md linked a missing member")
-	}
-	if !strings.Contains(string(out), "README.md links to missing archive member") {
-		t.Fatalf("verify-release-artifacts did not report the missing README.md link:\n%s", out)
 	}
 }
 
@@ -923,12 +663,10 @@ func releaseTargetsForTest() []string {
 
 func releaseFilesForTest(name, binary string) map[string]string {
 	files := map[string]string{
-		name + "/README.md":                            "See [security](SECURITY.md), [overview](docs/technical-overview.md), [threat model](docs/threat-model-and-limitations.md), and [roadmap](docs/roadmap.md).\n",
-		name + "/SECURITY.md":                          "security policy",
-		name + "/VERSION":                              "0.1.0\n",
-		name + "/docs/technical-overview.md":           "technical overview",
-		name + "/docs/roadmap.md":                      "roadmap",
-		name + "/docs/threat-model-and-limitations.md": "threat model",
+		name + "/README.md":                  "readme",
+		name + "/VERSION":                    "0.1.0\n",
+		name + "/docs/technical-overview.md": "technical overview",
+		name + "/docs/roadmap.md":            "roadmap",
 	}
 	if binary != "" {
 		files[name+"/"+binary] = "binary"

@@ -1,41 +1,16 @@
 package lsec
 
 import (
-	"bytes"
-	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
-	"net/http"
-	"net/url"
-	"os"
 	"strconv"
 	"strings"
 	"time"
 )
-
-const discordWebhookTimeout = 10 * time.Second
-
-func discordHTTPClient() *http.Client {
-	return &http.Client{
-		Timeout: discordWebhookTimeout,
-		CheckRedirect: func(req *http.Request, via []*http.Request) error {
-			if len(via) >= 3 {
-				return errors.New("discord webhook too many redirects")
-			}
-			if req.URL == nil {
-				return errors.New("discord webhook redirect missing URL")
-			}
-			if err := validateDiscordWebhookURL(req.URL.String()); err != nil {
-				return fmt.Errorf("discord webhook redirect rejected: %w", err)
-			}
-			return nil
-		},
-	}
-}
 
 const notificationSchema = "local-sec.notification.plan"
 
@@ -148,87 +123,9 @@ func runNotifyCLI(args []string, stdout io.Writer, store Store) error {
 		}
 		fmt.Fprintf(stdout, "notification marked sent locally: %s\n", notificationID)
 		return nil
-	case "send-discord":
-		if len(args) != 2 || strings.TrimSpace(args[1]) == "" {
-			return errors.New("notify send-discord requires notification_id")
-		}
-		return sendDiscordNotification(store, strings.TrimSpace(args[1]), stdout)
 	default:
 		return fmt.Errorf("unknown notify subcommand %q", args[0])
 	}
-}
-
-func sendDiscordNotification(store Store, notificationID string, stdout io.Writer) error {
-	planned, ok, err := store.LoadPlannedNotification(notificationID)
-	if err != nil {
-		return err
-	}
-	if !ok {
-		return fmt.Errorf("notification %s not found in planned notifications", notificationID)
-	}
-	webhook := strings.TrimSpace(os.Getenv("LSEC_DISCORD_WEBHOOK_URL"))
-	if webhook == "" {
-		return errors.New("LSEC_DISCORD_WEBHOOK_URL is required for notify send-discord")
-	}
-	if err := validateDiscordWebhookURL(webhook); err != nil {
-		return err
-	}
-	body, err := discordWebhookBody(planned)
-	if err != nil {
-		return err
-	}
-	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, webhook, bytes.NewReader(body))
-	if err != nil {
-		return err
-	}
-	req.Header.Set("content-type", "application/json")
-	resp, err := discordHTTPClient().Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode >= 300 {
-		return fmt.Errorf("discord webhook returned %s", resp.Status)
-	}
-	event := NotificationSentEvent{NotificationID: notificationID, RunID: planned.RunID, CreatedAt: time.Now().UTC(), Redacted: true}
-	if err := store.AppendNotificationEvent("notification_sent", event); err != nil {
-		return err
-	}
-	fmt.Fprintf(stdout, "notification sent to discord: %s\n", notificationID)
-	return nil
-}
-
-func validateDiscordWebhookURL(raw string) error {
-	u, err := url.Parse(raw)
-	if err != nil {
-		return errors.New("invalid discord webhook URL")
-	}
-	if u.Scheme != "https" {
-		return errors.New("discord webhook URL must use https")
-	}
-	host := strings.ToLower(u.Hostname())
-	if host != "discord.com" && host != "discordapp.com" {
-		return errors.New("discord webhook URL host must be discord.com or discordapp.com")
-	}
-	if !strings.HasPrefix(u.Path, "/api/webhooks/") {
-		return errors.New("discord webhook URL path must start with /api/webhooks/")
-	}
-	return nil
-}
-
-func discordWebhookBody(payload NotificationPayload) ([]byte, error) {
-	content := fmt.Sprintf(
-		"local-sec review\nrun_id=%s\nverdict=%s\nlane=%s\nevidence=%s\nnotification_id=%s\nmanager=%s action=%s",
-		payload.RunID, payload.Verdict, payload.Lane, payload.EvidenceSHA256, payload.NotificationID, payload.Command.Manager, payload.Command.Action,
-	)
-	if len(payload.Risk.Reasons) > 0 {
-		content += "\nreason=" + payload.Risk.Reasons[0]
-	}
-	// Discord content hard limit is 2000 characters; keep redacted summary short.
-	if len(content) > 1800 {
-		content = content[:1800]
-	}
-	return json.Marshal(map[string]string{"content": content})
 }
 
 func parseNotifyLimit(args []string) (int, error) {

@@ -6,62 +6,6 @@ func DefaultPolicy() Policy {
 	return Policy{MaturityDays: 7}
 }
 
-func riskFlagVerdict(flag RiskFlag) Verdict {
-	switch flag.Severity {
-	case "block":
-		return VerdictBlock
-	case "prompt":
-		return VerdictPrompt
-	default:
-		return VerdictAllow
-	}
-}
-
-func findingVerdict(finding Finding) Verdict {
-	switch finding.Severity {
-	case "block":
-		return VerdictBlock
-	case "prompt":
-		return VerdictPrompt
-	default:
-		return VerdictAllow
-	}
-}
-
-func advisoryVerdict(advisory Advisory) Verdict {
-	if strings.EqualFold(advisory.Type, "malware") || strings.EqualFold(advisory.Severity, "critical") {
-		return VerdictBlock
-	}
-	return VerdictPrompt
-}
-
-func hasBlockingRiskFlag(analysis CommandAnalysis) bool {
-	for _, flag := range analysis.RiskFlags {
-		if riskFlagVerdict(flag) == VerdictBlock {
-			return true
-		}
-	}
-	return false
-}
-
-func hasBlockingFinding(findings []Finding) bool {
-	for _, finding := range findings {
-		if findingVerdict(finding) == VerdictBlock {
-			return true
-		}
-	}
-	return false
-}
-
-func hasBlockingAdvisory(advisories []Advisory) bool {
-	for _, advisory := range advisories {
-		if advisoryVerdict(advisory) == VerdictBlock {
-			return true
-		}
-	}
-	return false
-}
-
 func (p Policy) Evaluate(analysis CommandAnalysis, version VersionInfo, findings []Finding, advisories ...[]Advisory) Decision {
 	var reasons []string
 	verdict := VerdictAllow
@@ -70,17 +14,17 @@ func (p Policy) Evaluate(analysis CommandAnalysis, version VersionInfo, findings
 		return decisionWithLane(VerdictBlock, []string{"remote downloader piped to shell is blocked"})
 	}
 	for _, finding := range findings {
-		switch findingVerdict(finding) {
-		case VerdictBlock:
+		if finding.Severity == "block" {
 			return decisionWithLane(VerdictBlock, []string{finding.Message})
-		case VerdictPrompt:
+		}
+		if finding.Severity == "prompt" {
 			verdict = VerdictPrompt
 			reasons = append(reasons, finding.Message)
 		}
 	}
 	for _, group := range advisories {
 		for _, advisory := range group {
-			if advisoryVerdict(advisory) == VerdictBlock {
+			if strings.EqualFold(advisory.Type, "malware") || strings.EqualFold(advisory.Severity, "critical") {
 				return decisionWithLane(VerdictBlock, []string{"known malicious or critical advisory: " + advisory.ID})
 			}
 			verdict = VerdictPrompt
@@ -92,10 +36,10 @@ func (p Policy) Evaluate(analysis CommandAnalysis, version VersionInfo, findings
 		reasons = append(reasons, "selected version is inside maturity window")
 	}
 	for _, flag := range analysis.RiskFlags {
-		switch riskFlagVerdict(flag) {
-		case VerdictBlock:
+		if flag.Severity == "block" {
 			return decisionWithLane(VerdictBlock, []string{flag.Message})
-		case VerdictPrompt:
+		}
+		if flag.Severity == "prompt" {
 			verdict = VerdictPrompt
 			reasons = append(reasons, flag.Message)
 		}

@@ -2,7 +2,6 @@ package lsec
 
 import (
 	"context"
-	"path/filepath"
 	"strings"
 	"time"
 )
@@ -32,15 +31,11 @@ func CheckNPMStagedExecutionSupport(analysis CommandAnalysis, version VersionInf
 	if analysis.Manager != "npm" {
 		return nil
 	}
-	tarballs := npmStagedTarballs(artifacts)
-	if len(tarballs) == 0 {
-		return nil
-	}
-	if canPromoteNPMStagedInstall(analysis, version, artifacts) {
-		return nil
-	}
-	labels := make([]string, 0, len(tarballs))
-	for _, artifact := range tarballs {
+	var tarballs []string
+	for _, artifact := range artifacts {
+		if artifact.Kind != "tar" || artifact.Ecosystem != "npm" {
+			continue
+		}
 		label := artifact.Name
 		if label != "" && artifact.Version != "" {
 			label += "@" + artifact.Version
@@ -48,107 +43,43 @@ func CheckNPMStagedExecutionSupport(analysis CommandAnalysis, version VersionInf
 		if label == "" {
 			label = artifact.Path
 		}
-		labels = append(labels, label)
+		tarballs = append(tarballs, label)
+	}
+	if len(tarballs) == 0 {
+		return nil
+	}
+	if _, ok := stagedNPMInstallArtifact(analysis, version, artifacts); ok {
+		return nil
 	}
 	code := "npm_staged_execution_unsupported"
-	message := "npm staged artifacts cannot be promoted into this final npm execution; this run is blocked so approved bytes are not replaced by a registry fetch"
+	message := "npm staged artifacts cannot yet be promoted into this final npm execution; this run is blocked so approved bytes are not replaced by a registry fetch"
 	if analysis.Action == "install" {
 		code = "npm_staged_dependency_install_unsupported"
-		message = "staged npm tarballs cannot be promoted into an exact-byte offline install for this command"
+		message = "recursive npm dependencies were scanned, but exact-byte final install is not implemented yet; this run is blocked pending npm cache/store promotion support"
 	}
 	return []Finding{{
 		Code:     code,
 		Severity: "block",
 		Message:  message,
-		Evidence: strings.Join(labels, ", "),
+		Evidence: strings.Join(tarballs, ", "),
 	}}
 }
 
-func canPromoteNPMStagedInstall(analysis CommandAnalysis, version VersionInfo, artifacts []Artifact) bool {
-	if !npmActionSupportsExactBytePromotion(analysis) || !version.Found || version.Selected.Version == "" || len(analysis.PackageSpecs) == 0 {
-		return false
-	}
-	selectedName := analysis.PackageSpecs[0].Name
-	if selectedName == "" {
-		return false
-	}
-	tarballs := npmStagedTarballs(artifacts)
-	if len(tarballs) == 0 {
-		return false
-	}
-	if _, ok := npmStagingDirFromArtifacts(artifacts); !ok {
-		return false
-	}
-	for _, artifact := range tarballs {
-		if artifact.Name == selectedName && artifact.Version == version.Selected.Version {
-			return true
-		}
-	}
-	return false
-}
-
-func npmActionSupportsExactBytePromotion(analysis CommandAnalysis) bool {
-	switch analysis.Manager {
-	case "npm":
-		switch analysis.Action {
-		case "install", "exec", "init":
-			return true
-		}
-	case "npx":
-		return analysis.Action == "exec" || analysis.OneShot
-	}
-	return false
-}
-
 func stagedNPMInstallArtifact(analysis CommandAnalysis, version VersionInfo, artifacts []Artifact) (Artifact, bool) {
-	if !canPromoteNPMStagedInstall(analysis, version, artifacts) {
+	if analysis.Manager != "npm" || analysis.Action != "install" || !version.Found || version.Selected.Version == "" || len(artifacts) != 1 || len(analysis.PackageSpecs) == 0 {
 		return Artifact{}, false
 	}
-	// Single-tarball file install is only safe for classic npm install roots.
-	if analysis.Manager != "npm" || analysis.Action != "install" {
+	if analysis.PackageSpecs[0].Name == "" {
 		return Artifact{}, false
 	}
-	tarballs := npmStagedTarballs(artifacts)
-	if len(tarballs) != 1 {
+	artifact := artifacts[0]
+	if artifact.Kind != "tar" || artifact.Ecosystem != "npm" {
 		return Artifact{}, false
 	}
-	return tarballs[0], true
-}
-
-func npmStagedTarballs(artifacts []Artifact) []Artifact {
-	out := make([]Artifact, 0, len(artifacts))
-	for _, artifact := range artifacts {
-		if artifact.Kind != "tar" || artifact.Ecosystem != "npm" || artifact.Name == "" || artifact.Version == "" || artifact.Path == "" {
-			continue
-		}
-		out = append(out, artifact)
+	if artifact.Name != analysis.PackageSpecs[0].Name || artifact.Version != version.Selected.Version {
+		return Artifact{}, false
 	}
-	return out
-}
-
-func npmStagingDirFromArtifacts(artifacts []Artifact) (string, bool) {
-	tarballs := npmStagedTarballs(artifacts)
-	if len(tarballs) == 0 {
-		return "", false
-	}
-	dir := filepath.Dir(tarballs[0].Path)
-	if dir == "." || dir == "" {
-		return "", false
-	}
-	for _, artifact := range tarballs {
-		if filepath.Dir(artifact.Path) != dir {
-			return "", false
-		}
-	}
-	return dir, true
-}
-
-func npmOfflineCacheDir(artifacts []Artifact) (string, bool) {
-	dir, ok := npmStagingDirFromArtifacts(artifacts)
-	if !ok {
-		return "", false
-	}
-	return filepath.Join(dir, "npm-offline-cache"), true
+	return artifact, true
 }
 
 func CheckFirstSeenPackages(store Store, ecosystem string, specs []PackageSpec, artifacts []Artifact) []Finding {
@@ -418,4 +349,31 @@ func RefreshDependencyAdvisories(ctx context.Context, store Store, artifacts []A
 
 func dependencyKey(ecosystem, name, version string) string {
 	return ecosystem + "\x00" + name + "\x00" + version
+}
+
+func hasBlockingRiskFlag(analysis CommandAnalysis) bool {
+	for _, flag := range analysis.RiskFlags {
+		if flag.Severity == "block" {
+			return true
+		}
+	}
+	return false
+}
+
+func hasBlockingFinding(findings []Finding) bool {
+	for _, finding := range findings {
+		if finding.Severity == "block" {
+			return true
+		}
+	}
+	return false
+}
+
+func hasBlockingAdvisory(advisories []Advisory) bool {
+	for _, advisory := range advisories {
+		if strings.EqualFold(advisory.Type, "malware") || strings.EqualFold(advisory.Severity, "critical") {
+			return true
+		}
+	}
+	return false
 }

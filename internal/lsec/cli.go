@@ -53,22 +53,7 @@ func Run(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 		if err != nil {
 			return err
 		}
-		store := NewStore(paths)
-		if err := store.Init(); err != nil {
-			return err
-		}
-		return runNotifyCLI(args[1:], stdout, store)
-	}
-	if args[0] == "macos-detonation" {
-		paths, err := DefaultPaths()
-		if err != nil {
-			return err
-		}
-		store := NewStore(paths)
-		if err := store.Init(); err != nil {
-			return err
-		}
-		return runMacOSDetonationCLI(args[1:], stdout, store)
+		return runNotifyCLI(args[1:], stdout, NewStore(paths))
 	}
 	paths, err := DefaultPaths()
 	if err != nil {
@@ -473,16 +458,9 @@ func printUsage(w io.Writer) {
 	fmt.Fprintln(w, "  lsec sandbox run --mode docker-fixture [--docker PATH] -- <command> ...")
 	fmt.Fprintln(w, "  lsec remote-sandbox prepare <run_id> [--out PATH]")
 	fmt.Fprintln(w, "  lsec remote-sandbox submit-fake <run_id> [--result PATH]")
-	fmt.Fprintln(w, "  lsec remote-sandbox submit <run_id> --result PATH")
-	fmt.Fprintln(w, "  lsec remote-sandbox run-local <run_id> [--result PATH]")
-	fmt.Fprintln(w, "  lsec macos-detonation prepare-fixture <run_id> [--out PATH]")
-	fmt.Fprintln(w, "  lsec macos-detonation run-local-fixture <run_id> [--result PATH]")
-	fmt.Fprintln(w, "  lsec macos-detonation validate-result --job PATH --result PATH")
-	fmt.Fprintln(w, "  lsec macos-detonation run-external <run_id>")
 	fmt.Fprintln(w, "  lsec notify plan <run_id> [--out PATH]")
 	fmt.Fprintln(w, "  lsec notify list [limit]")
 	fmt.Fprintln(w, "  lsec notify mark-sent <notification_id>")
-	fmt.Fprintln(w, "  lsec notify send-discord <notification_id>")
 	fmt.Fprintln(w, "  lsec install-shims")
 	fmt.Fprintln(w, "  lsec doctor")
 	fmt.Fprintln(w, "  lsec approvals list|add|revoke|suggest")

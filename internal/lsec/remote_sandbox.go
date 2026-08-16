@@ -52,18 +52,47 @@ type remoteSandboxEvent struct {
 	Redacted       bool      `json:"redacted"`
 }
 
-func appendRemoteSandboxResultEvent(store Store, result RemoteSandboxResult) error {
-	event := remoteSandboxEvent{
-		Schema:         remoteSandboxResultSchema,
-		Version:        result.Version,
-		RunID:          result.RunID,
-		EvidenceSHA256: result.EvidenceSHA256,
-		Status:         result.Status,
-		FindingCount:   len(result.Findings),
-		CreatedAt:      result.CreatedAt,
-		Redacted:       true,
+func runRemoteSandboxCLI(args []string, stdout io.Writer, store Store) error {
+	if len(args) < 2 {
+		return errors.New("remote-sandbox requires a subcommand and run_id")
 	}
-	return store.AppendEvent("remote_sandbox", event)
+	switch args[0] {
+	case "prepare":
+		out, err := parseRemoteSandboxPathFlag(args[2:], "--out")
+		if err != nil {
+			return err
+		}
+		request, err := PrepareRemoteSandboxRequest(store, args[1], time.Now().UTC())
+		if err != nil {
+			return err
+		}
+		return writeRemoteSandboxJSON(stdout, out, request)
+	case "submit-fake":
+		resultPath, err := parseRemoteSandboxPathFlag(args[2:], "--result")
+		if err != nil {
+			return err
+		}
+		result, err := SubmitFakeRemoteSandbox(store, args[1], time.Now().UTC())
+		if err != nil {
+			return err
+		}
+		if err := writeRemoteSandboxJSON(stdout, resultPath, result); err != nil {
+			return err
+		}
+		event := remoteSandboxEvent{
+			Schema:         remoteSandboxResultSchema,
+			Version:        result.Version,
+			RunID:          result.RunID,
+			EvidenceSHA256: result.EvidenceSHA256,
+			Status:         result.Status,
+			FindingCount:   len(result.Findings),
+			CreatedAt:      result.CreatedAt,
+			Redacted:       true,
+		}
+		return store.AppendEvent("remote_sandbox", event)
+	default:
+		return fmt.Errorf("unknown remote-sandbox subcommand %q", args[0])
+	}
 }
 
 func PrepareRemoteSandboxRequest(store Store, runID string, now time.Time) (RemoteSandboxPrepareRequest, error) {
@@ -100,115 +129,6 @@ func SubmitFakeRemoteSandbox(store Store, runID string, now time.Time) (RemoteSa
 		Findings:       nil,
 		CreatedAt:      now.UTC(),
 	}, nil
-}
-
-// SubmitRemoteSandboxResult ingests an external worker result with fail-closed policy:
-// run_id and evidence_sha256 must match the prepared local evidence; findings may only escalate.
-func SubmitRemoteSandboxResult(store Store, runID, resultPath string, now time.Time) (RemoteSandboxResult, error) {
-	request, err := PrepareRemoteSandboxRequest(store, runID, now)
-	if err != nil {
-		return RemoteSandboxResult{}, err
-	}
-	body, err := os.ReadFile(filepath.Clean(resultPath))
-	if err != nil {
-		return RemoteSandboxResult{}, err
-	}
-	var result RemoteSandboxResult
-	if err := json.Unmarshal(body, &result); err != nil {
-		return RemoteSandboxResult{}, fmt.Errorf("invalid remote sandbox result: %w", err)
-	}
-	if err := validateRemoteSandboxResult(request, result); err != nil {
-		return RemoteSandboxResult{}, err
-	}
-	result.Findings = sanitizeRemoteSandboxFindings(result.Findings)
-	result.SandboxEvidence = redactSandboxEvidence(result.SandboxEvidence)
-	if result.CreatedAt.IsZero() {
-		result.CreatedAt = now.UTC()
-	}
-	if result.Status == "" {
-		result.Status = RemoteSandboxStatusComplete
-	}
-	return result, nil
-}
-
-func validateRemoteSandboxResult(request RemoteSandboxPrepareRequest, result RemoteSandboxResult) error {
-	if result.Schema != "" && result.Schema != remoteSandboxResultSchema {
-		return fmt.Errorf("remote sandbox result schema %q is not supported", result.Schema)
-	}
-	if result.RunID == "" {
-		return errors.New("remote sandbox result missing run_id")
-	}
-	if result.RunID != request.RunID {
-		return fmt.Errorf("remote sandbox result run_id %q does not match %q", result.RunID, request.RunID)
-	}
-	if result.EvidenceSHA256 == "" {
-		return errors.New("remote sandbox result missing evidence_sha256")
-	}
-	if !strings.EqualFold(result.EvidenceSHA256, request.EvidenceSHA256) {
-		return errors.New("remote sandbox result evidence_sha256 does not match prepared evidence")
-	}
-	for _, finding := range result.Findings {
-		if _, err := normalizeRemoteSandboxSeverity(finding.Severity); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func normalizeRemoteSandboxSeverity(severity string) (string, error) {
-	switch strings.ToLower(strings.TrimSpace(severity)) {
-	case "block", "critical", "high", "error", "malware":
-		return "block", nil
-	case "prompt", "medium", "low", "warning", "info":
-		return "prompt", nil
-	case "allow":
-		return "", errors.New("remote sandbox findings may only escalate risk, not allow")
-	case "":
-		return "", errors.New("remote sandbox finding missing severity")
-	default:
-		return "", fmt.Errorf("remote sandbox finding severity %q is not supported", severity)
-	}
-}
-
-func sanitizeRemoteSandboxFindings(findings []Finding) []Finding {
-	if len(findings) == 0 {
-		return nil
-	}
-	out := make([]Finding, 0, len(findings))
-	for _, finding := range findings {
-		severity, err := normalizeRemoteSandboxSeverity(finding.Severity)
-		if err != nil {
-			// Validation should have rejected this; fail closed to block.
-			severity = "block"
-		}
-		finding.Severity = severity
-		finding.Message = redactEvidenceText(finding.Message)
-		finding.Evidence = redactEvidenceText(finding.Evidence)
-		finding.File = redactEvidencePath(finding.File)
-		if finding.Code == "" {
-			finding.Code = "remote_sandbox_finding"
-		}
-		out = append(out, finding)
-	}
-	return out
-}
-
-// ApplyRemoteSandboxResult merges remote findings into a report and re-evaluates policy.
-// Deterministic blocks already present cannot be cleared by remote results.
-func ApplyRemoteSandboxResult(report RunReport, result RemoteSandboxResult) RunReport {
-	before := report.Decision.Verdict
-	report.Findings = append(report.Findings, result.Findings...)
-	if result.SandboxEvidence.Enabled || result.SandboxEvidence.Mode != "" {
-		report.Sandbox = result.SandboxEvidence
-		report.Sandbox.Enabled = true
-	}
-	report.Decision = DefaultPolicy().Evaluate(report.Analysis, report.Version, report.Findings, report.Advisories)
-	if before == VerdictBlock {
-		report.Decision.Verdict = VerdictBlock
-		report.Decision.Lane = LaneBlock
-		report.Decision.Reasons = uniqueStrings(append(report.Decision.Reasons, "deterministic local block retained after remote sandbox review"))
-	}
-	return report
 }
 
 func BuildRemoteSandboxEvidenceBundle(report RunReport) EvidenceBundle {

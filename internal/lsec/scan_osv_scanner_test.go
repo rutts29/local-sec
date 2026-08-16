@@ -110,15 +110,21 @@ func TestOSVScannerReceivesOnlyNPMLockfiles(t *testing.T) {
 	}
 	got := string(args)
 	gotArgs := strings.Fields(got)
-	if len(gotArgs) != 7 || gotArgs[0] != "scan" || gotArgs[1] != "-L" || gotArgs[3] != "-L" || gotArgs[5] != "--format" || gotArgs[6] != "json" {
-		t.Fatalf("osv-scanner args = %#v, want copied lockfile invocation", gotArgs)
+	wantArgs := []string{
+		"scan",
+		"-L", filepath.Join(project, "nested", "npm-shrinkwrap.json"),
+		"-L", filepath.Join(project, "package-lock.json"),
+		"--format", "json",
 	}
-	for _, arg := range []string{gotArgs[2], gotArgs[4]} {
-		if !strings.Contains(arg, "lsec-scan-provider-") || !filepath.IsAbs(arg) {
-			t.Fatalf("osv-scanner lockfile arg = %q, want private provider copy", arg)
+	if strings.Join(gotArgs, "\n") != strings.Join(wantArgs, "\n") {
+		t.Fatalf("osv-scanner args = %#v, want %#v", gotArgs, wantArgs)
+	}
+	for _, want := range []string{filepath.Join(project, "package-lock.json"), filepath.Join(project, "nested", "npm-shrinkwrap.json")} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("osv-scanner args = %q, want %s", got, want)
 		}
 	}
-	for _, unwanted := range []string{project, filepath.Join(project, "package-lock.json"), filepath.Join(project, "nested", "npm-shrinkwrap.json"), filepath.Join(project, "package.json"), filepath.Join(project, "src", "index.js"), filepath.Join(project, "node_modules", ".package-lock.json"), filepath.Join(project, "node_modules", "pkg", "package-lock.json")} {
+	for _, unwanted := range []string{project, filepath.Join(project, "package.json"), filepath.Join(project, "src", "index.js"), filepath.Join(project, "node_modules", ".package-lock.json"), filepath.Join(project, "node_modules", "pkg", "package-lock.json")} {
 		for _, arg := range gotArgs {
 			if arg == unwanted {
 				t.Fatalf("osv-scanner args = %#v, should not include %s", gotArgs, unwanted)
@@ -334,39 +340,5 @@ echo '{"results":[{"source":{"path":"`+lockfile+`"},"packages":[{"package":{"nam
 	}
 	if !strings.Contains(out, `"source_path": "[redacted]"`) {
 		t.Fatalf("scan output = %s, want redacted source path", out)
-	}
-}
-
-func TestOSVScannerReadsCopiedLockfileAfterOriginalChanges(t *testing.T) {
-	root := t.TempDir()
-	project := filepath.Join(root, "project")
-	lockfile := filepath.Join(project, "package-lock.json")
-	seenArg := filepath.Join(root, "seen-arg")
-	seenContent := filepath.Join(root, "seen-content")
-	writeFile(t, lockfile, `{"lockfileVersion":3,"packages":{"node_modules/vuln":{"version":"1.0.0"}}}`)
-	writeFakeTool(t, root, "osv-scanner", `#!/bin/sh
-lockfile="$3"
-printf '%s' "$lockfile" > `+shellQuote(seenArg)+`
-printf '{"lockfileVersion":3,"packages":{"node_modules/evil":{"version":"9.9.9"}}}\n' > `+shellQuote(lockfile)+`
-/bin/cat "$lockfile" > `+shellQuote(seenContent)+`
-echo '{"results":[{"source":{"path":"'"$lockfile"'"},"packages":[{"package":{"name":"vuln","ecosystem":"npm","version":"1.0.0"},"vulnerabilities":[{"id":"GHSA-copy","database_specific":{"severity":"HIGH"}}]}]}]}'
-exit 1
-`)
-	t.Setenv("PATH", root)
-
-	findings, diagnostics, snapshot := runOSVScannerProvider(t.Context(), "run", []string{project})
-
-	if len(diagnostics) != 0 || snapshot.Status != "ok" {
-		t.Fatalf("diagnostics = %#v snapshot = %#v, want successful copied read", diagnostics, snapshot)
-	}
-	if len(findings) != 1 || findings[0].ProviderRecordID != "GHSA-copy" || findings[0].SourcePath != lockfile {
-		t.Fatalf("findings = %#v, want copied source remapped to original lockfile path", findings)
-	}
-	arg := readTextFile(t, seenArg)
-	if arg == lockfile || !strings.Contains(arg, "lsec-scan-provider-") {
-		t.Fatalf("osv-scanner arg = %q, want provider temp copy", arg)
-	}
-	if got := readTextFile(t, seenContent); !strings.Contains(got, `"node_modules/vuln"`) || strings.Contains(got, "node_modules/evil") {
-		t.Fatalf("copied lockfile content = %q, want original safe content", got)
 	}
 }

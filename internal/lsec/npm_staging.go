@@ -5,7 +5,7 @@ import (
 	"crypto/sha1"
 	"crypto/sha512"
 	"encoding/base64"
-	"errors"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -13,40 +13,16 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 )
 
-func npmRegistryHTTPClient() *http.Client {
-	base := http.DefaultClient
-	if base == nil {
-		base = &http.Client{}
-	}
-	client := *base
-	client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
-		if len(via) >= 5 {
-			return errors.New("npm tarball too many redirects")
-		}
-		if req.URL == nil || !isAllowedNPMRegistryResolvedURL(req.URL.String()) {
-			host := ""
-			if req.URL != nil {
-				host = req.URL.String()
-			}
-			return fmt.Errorf("npm tarball redirect outside registry: %s", host)
-		}
-		return nil
-	}
-	return &client
+type npmLockedArtifact struct {
+	Name      string
+	Version   string
+	Resolved  string
+	Integrity string
 }
-
-func isNPMRegistryRedirectRejected(err error) bool {
-	if err == nil {
-		return false
-	}
-	msg := strings.ToLower(err.Error())
-	return strings.Contains(msg, "redirect outside registry") || strings.Contains(msg, "too many redirects")
-}
-
-type npmLockedArtifact = npmLockedPackage
 
 func stageNPM(ctx context.Context, staging string, analysis CommandAnalysis, version VersionInfo) ([]Artifact, []Finding) {
 	npmPath, err := findRealExecutable("npm")
@@ -77,49 +53,7 @@ func stageNPM(ctx context.Context, staging string, analysis CommandAnalysis, ver
 			return nil, []Finding{*finding}
 		}
 	}
-	artifacts, findings := collectArtifacts(staging)
-	if seedFindings := seedNPMOfflineCache(ctx, staging, artifacts); len(seedFindings) > 0 {
-		findings = append(findings, seedFindings...)
-	}
-	return artifacts, findings
-}
-
-func seedNPMOfflineCache(ctx context.Context, staging string, artifacts []Artifact) []Finding {
-	tarballs := npmStagedTarballs(artifacts)
-	// Seed whenever more than one tarball is present, or when any one-shot path may
-	// need offline package promotion (exec/init/npx rewrite uses the cache).
-	if len(tarballs) == 0 {
-		return nil
-	}
-	if len(tarballs) == 1 {
-		// Single install root uses the tarball path; still seed for exec/create rewrites.
-		// Cheap and keeps promotion deterministic.
-	}
-	cacheDir, ok := npmOfflineCacheDir(artifacts)
-	if !ok {
-		return []Finding{{Code: "npm_offline_cache_unavailable", Severity: "block", Message: "could not determine offline cache directory for staged npm tarballs"}}
-	}
-	npmPath, err := findRealExecutable("npm")
-	if err != nil {
-		return []Finding{{Code: "missing_tool", Severity: "prompt", Message: "npm is not installed"}}
-	}
-	if err := os.MkdirAll(cacheDir, 0o700); err != nil {
-		return []Finding{{Code: "npm_offline_cache_failed", Severity: "block", Message: "could not create npm offline cache", Evidence: err.Error()}}
-	}
-	for _, artifact := range tarballs {
-		cmd := exec.CommandContext(ctx, npmPath, "cache", "add", artifact.Path, "--cache", cacheDir)
-		cmd.Env = safeEnv(staging)
-		out, err := cmd.CombinedOutput()
-		if err != nil {
-			return []Finding{{
-				Code:     "npm_offline_cache_failed",
-				Severity: "block",
-				Message:  "failed to seed npm offline cache with staged tarball",
-				Evidence: artifact.Name + "@" + artifact.Version + " " + limitString(string(out), 400),
-			}}
-		}
-	}
-	return nil
+	return collectArtifacts(staging)
 }
 
 func parseNPMStagingLockfile(path string) ([]npmLockedArtifact, []Finding) {
@@ -127,35 +61,94 @@ func parseNPMStagingLockfile(path string) ([]npmLockedArtifact, []Finding) {
 	if err != nil {
 		return nil, []Finding{{Code: "npm_lockfile_missing", Severity: "block", File: path, Message: "npm lockfile-only resolution did not create package-lock.json", Evidence: err.Error()}}
 	}
-	locked, findings := parseNPMLockfileDocument(path, body)
-	verified := make([]npmLockedArtifact, 0, len(locked))
-	for _, pkg := range locked {
-		if _, err := parseNPMIntegrity(pkg.Integrity); err != nil {
-			findings = append(findings, Finding{Code: "npm_lockfile_unsupported_integrity", Severity: "block", File: path, Message: "package-lock entry integrity is missing a supported sha512 or sha1 digest", Evidence: pkg.Name + "@" + pkg.Version + " " + pkg.Integrity})
-			continue
-		}
-		verified = append(verified, pkg)
+	var doc struct {
+		Packages map[string]struct {
+			Version   string `json:"version"`
+			Resolved  string `json:"resolved"`
+			Integrity string `json:"integrity"`
+			Link      bool   `json:"link"`
+		} `json:"packages"`
+		Dependencies map[string]struct {
+			Version   string `json:"version"`
+			Resolved  string `json:"resolved"`
+			Integrity string `json:"integrity"`
+			Link      bool   `json:"link"`
+		} `json:"dependencies"`
 	}
-	return verified, findings
+	if err := json.Unmarshal(body, &doc); err != nil {
+		return nil, []Finding{{Code: "npm_lockfile_parse_failed", Severity: "block", File: path, Message: "could not parse package-lock.json", Evidence: err.Error()}}
+	}
+	var out []npmLockedArtifact
+	var findings []Finding
+	if len(doc.Packages) > 0 {
+		for pkgPath, pkg := range doc.Packages {
+			if pkgPath == "" {
+				continue
+			}
+			if pkg.Link {
+				findings = append(findings, linkedNPMLockfileFinding(path, pkgPath))
+				continue
+			}
+			name, ok := packageNameFromNodeModulesPath(pkgPath)
+			if !ok {
+				findings = append(findings, unverifiedNPMLockfilePackagePathFinding(path, pkgPath))
+				continue
+			}
+			artifact, packageFindings := lockedNPMArtifact(path, name, pkg.Version, pkg.Resolved, pkg.Integrity)
+			if artifact.Name != "" {
+				out = append(out, artifact)
+			}
+			findings = append(findings, packageFindings...)
+		}
+	} else {
+		for name, dep := range doc.Dependencies {
+			if dep.Link {
+				findings = append(findings, linkedNPMLockfileFinding(path, name))
+				continue
+			}
+			artifact, depFindings := lockedNPMArtifact(path, name, dep.Version, dep.Resolved, dep.Integrity)
+			if artifact.Name != "" {
+				out = append(out, artifact)
+			}
+			findings = append(findings, depFindings...)
+		}
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		if out[i].Name == out[j].Name {
+			return out[i].Version < out[j].Version
+		}
+		return out[i].Name < out[j].Name
+	})
+	return out, findings
+}
+
+func lockedNPMArtifact(file, name, version, resolved, integrity string) (npmLockedArtifact, []Finding) {
+	if name == "" || version == "" {
+		return npmLockedArtifact{}, []Finding{{Code: "npm_lockfile_missing_version", Severity: "block", File: file, Message: "package-lock entry is missing an exact version", Evidence: name}}
+	}
+	if findings := npmLockfileResolvedFindings(file, name, version, resolved); len(findings) > 0 {
+		return npmLockedArtifact{}, findings
+	}
+	if integrity == "" {
+		return npmLockedArtifact{}, []Finding{{Code: "npm_lockfile_missing_integrity", Severity: "block", File: file, Message: "package-lock entry is missing integrity", Evidence: name + "@" + version}}
+	}
+	if _, err := parseNPMIntegrity(integrity); err != nil {
+		return npmLockedArtifact{}, []Finding{{Code: "npm_lockfile_unsupported_integrity", Severity: "block", File: file, Message: "package-lock entry integrity is missing a supported sha512 or sha1 digest", Evidence: name + "@" + version + " " + integrity}}
+	}
+	return npmLockedArtifact{Name: name, Version: version, Resolved: resolved, Integrity: integrity}, nil
 }
 
 func downloadNPMTarball(ctx context.Context, staging string, pkg npmLockedArtifact) *Finding {
 	if _, err := url.Parse(pkg.Resolved); err != nil {
 		return &Finding{Code: "npm_tarball_url_invalid", Severity: "block", Message: "npm tarball URL is invalid", Evidence: pkg.Name + " " + pkg.Resolved}
 	}
-	if !isAllowedNPMRegistryResolvedURL(pkg.Resolved) {
-		return &Finding{Code: "npm_tarball_external_source", Severity: "block", Message: "npm tarball URL is outside the npm registry", Evidence: pkg.Name + " " + pkg.Resolved}
-	}
 	target := filepath.Join(staging, npmTarballFilename(pkg.Name, pkg.Version))
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, pkg.Resolved, nil)
 	if err != nil {
 		return &Finding{Code: "npm_tarball_download_failed", Severity: "prompt", Message: err.Error(), Evidence: pkg.Name + "@" + pkg.Version}
 	}
-	resp, err := npmRegistryHTTPClient().Do(req)
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		if isNPMRegistryRedirectRejected(err) {
-			return &Finding{Code: "npm_tarball_external_redirect", Severity: "block", Message: "npm tarball download redirected outside the npm registry", Evidence: pkg.Name + "@" + pkg.Version + " " + err.Error()}
-		}
 		return &Finding{Code: "npm_tarball_download_failed", Severity: "prompt", Message: err.Error(), Evidence: pkg.Name + "@" + pkg.Version}
 	}
 	defer resp.Body.Close()

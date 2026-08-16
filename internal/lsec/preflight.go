@@ -2,9 +2,7 @@ package lsec
 
 import (
 	"context"
-	"os"
 	"path/filepath"
-	"strings"
 	"time"
 )
 
@@ -124,52 +122,8 @@ func preflight(command []string, paths Paths, store Store) (RunReport, error) {
 			decision = decisionWithLane(VerdictAllow, []string{"all staged artifact package/version/hash records are allowlisted"})
 		}
 	}
-	report := RunReport{
+	return RunReport{
 		RunID: runID, Analysis: analysis, Version: version, Artifacts: artifacts,
 		Findings: findings, Advisories: advisories, Decision: decision, CreatedAt: now,
-	}
-	return maybeAttachDockerFixturePreflight(ctx, report), nil
-}
-
-func maybeAttachDockerFixturePreflight(ctx context.Context, report RunReport) RunReport {
-	// Explicit opt-in keeps CI deterministic; operators enable for on-device dynamic evidence.
-	if strings.TrimSpace(os.Getenv("LSEC_DOCKER_FIXTURE_PREFLIGHT")) != "1" {
-		return report
-	}
-	if report.Decision.Verdict == VerdictBlock {
-		return report
-	}
-	if !shouldRunDockerFixturePreflight(report) {
-		return report
-	}
-	runner := NewDockerFixtureRunner(DockerFixtureConfig{})
-	result, err := runner.RunSandbox(ctx, SandboxRequest{
-		Mode:     SandboxModeDockerFixture,
-		Command:  []string{"true"},
-		Analysis: report.Analysis,
-		Version:  report.Version,
-	})
-	if err != nil {
-		report.Findings = append(report.Findings, Finding{
-			Code:     "docker_fixture_preflight_failed",
-			Severity: "prompt",
-			Message:  "optional docker fixture preflight failed",
-			Evidence: err.Error(),
-		})
-		report.Decision = DefaultPolicy().Evaluate(report.Analysis, report.Version, report.Findings, report.Advisories)
-		return report
-	}
-	return ApplySandboxResult(report, result)
-}
-
-func shouldRunDockerFixturePreflight(report RunReport) bool {
-	if report.Analysis.OneShot {
-		return true
-	}
-	for _, finding := range report.Findings {
-		if finding.Code == "dynamic_stage_deferred" {
-			return true
-		}
-	}
-	return false
+	}, nil
 }

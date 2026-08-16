@@ -3,16 +3,16 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>local-sec — package installs, checked before they run</title>
-<meta name="description" content="local-sec evaluates supported npm, pip, uv, curl, and more before the requested install runs. It stages supported artifact paths, scans them, checks advisories, then returns trusted, risky, or blocked — locally, fail-closed, no telemetry." />
+<title>local-sec — every install runs the gauntlet</title>
+<meta name="description" content="local-sec stages, scans, and advisory-checks every npm, pip, uv, and curl install before it touches your machine. Local-first, fail-closed, single binary, zero dependencies." />
 <meta name="color-scheme" content="dark" />
 <meta name="theme-color" content="#07080a" />
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23ff7a1a' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M12 2 4 5v6c0 5 3.4 8.5 8 11 4.6-2.5 8-6 8-11V5l-8-3Z'/%3E%3Cpath d='m8.5 12 2.5 2.5 4.5-4.5'/%3E%3C/svg%3E" />
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,700;12..96,800&family=Hanken+Grotesk:wght@400;500;600;700&family=Instrument+Serif:ital@0;1&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
-<meta property="og:title" content="local-sec — package installs, checked before they run" />
-<meta property="og:description" content="A local-first supply-chain guard for developer installs. It stages supported artifact paths, scans, and advisory-checks — then trusted, risky, or blocked. Fail-closed, no telemetry." />
+<meta property="og:title" content="local-sec — every install runs the gauntlet" />
+<meta property="og:description" content="A local-first supply-chain guard. Stages, scans, and advisory-checks every npm, pip, uv, and curl install — fail-closed, privacy-first." />
 <meta property="og:type" content="website" />
 <style>
   :root {
@@ -57,7 +57,7 @@
   :focus-visible { outline: 2px solid var(--sig); outline-offset: 3px; border-radius: 4px; }
   code { font-family: var(--mono); font-size: 0.88em; color: var(--sig-2); }
 
-  /* ---------- atmosphere: focal glow + grid + vignette ---------- */
+  /* ---------- atmosphere: one focal glow + grid + grain + vignette ---------- */
   .atmos { position: fixed; inset: 0; z-index: -2; pointer-events: none; }
   .atmos .glow {
     position: absolute; top: -18vh; right: -10vw;
@@ -77,6 +77,11 @@
     position: fixed; inset: 0; z-index: -1; pointer-events: none;
     background: radial-gradient(ellipse 120% 90% at 50% 30%, transparent 55%, rgba(0,0,0,0.55) 100%);
   }
+  .grain {
+    position: fixed; inset: 0; z-index: 100; pointer-events: none; opacity: 0.045; mix-blend-mode: overlay;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+  }
+
   /* ---------- glass / panel material ---------- */
   .glass {
     position: relative;
@@ -91,25 +96,11 @@
   .sheen { overflow: hidden; }
   .sheen::after {
     content: ""; position: absolute; inset: 0; border-radius: inherit; pointer-events: none;
-    background: linear-gradient(
-      100deg,
-      transparent 0%,
-      rgba(255,255,255,0.05) 50%,
-      transparent 100%
-    );
-    background-size: 40% 100%;
-    background-repeat: no-repeat;
-    background-position: -40% 0;
-    opacity: 0;
+    background: linear-gradient(120deg, transparent 32%, rgba(255,255,255,0.10) 47%, transparent 60%);
+    background-size: 240% 100%; background-position: 160% 0; opacity: 0; transition: opacity .45s ease;
   }
-  .sheen:hover::after {
-    opacity: 1;
-    animation: sweep 1.15s linear forwards;
-  }
-  @keyframes sweep {
-    from { background-position: -40% 0; }
-    to   { background-position: 140% 0; }
-  }
+  .sheen:hover::after { opacity: 1; animation: sweep 1.5s ease; }
+  @keyframes sweep { to { background-position: -160% 0; } }
 
   /* ---------- layout ---------- */
   .wrap { max-width: var(--maxw); margin: 0 auto; padding: 0 24px; }
@@ -134,14 +125,9 @@
   .nav-cta {
     display: inline-flex; align-items: center; gap: 7px; font-family: var(--mono); font-size: 0.84rem; font-weight: 500;
     padding: 9px 14px; border-radius: 999px; color: var(--text); border: 1px solid var(--line-2); background: rgba(255,255,255,0.04);
-    max-width: 0; padding-left: 0; padding-right: 0; margin: 0; border-width: 0; overflow: hidden; opacity: 0;
-    pointer-events: none; white-space: nowrap;
-    transition: max-width .35s ease, opacity .25s ease, padding .35s ease, border-color .2s, background .2s, transform .15s, margin .35s ease;
+    transition: border-color .2s, background .2s, transform .15s;
   }
-  .nav-cta.is-on {
-    max-width: 160px; padding: 9px 14px; border-width: 1px; opacity: 1; pointer-events: auto; margin: 0;
-  }
-  .nav-cta.is-on:hover { border-color: var(--sig); color: var(--sig-2); transform: translateY(-1px); }
+  .nav-cta:hover { border-color: var(--sig); color: var(--sig-2); transform: translateY(-1px); }
 
   .btn { display: inline-flex; align-items: center; gap: 9px; font-weight: 600; font-size: 0.98rem; padding: 13px 20px; border-radius: 999px; cursor: pointer; transition: transform .15s, box-shadow .2s, background .2s, border-color .2s; white-space: nowrap; }
   .btn-primary { color: #1b0d02; background: linear-gradient(180deg, var(--sig-2), var(--sig)); box-shadow: 0 10px 30px -10px rgba(255,122,26,0.6), inset 0 1px 0 rgba(255,255,255,0.45); }
@@ -162,9 +148,7 @@
     line-height: 0.96; letter-spacing: -0.035em; margin: 0 0 22px;
   }
   h1.display em { font-family: var(--serif); font-style: italic; font-weight: 400; color: var(--sig); letter-spacing: -0.01em; padding-right: 0.04em; }
-  .lede { font-size: clamp(1.04rem, 1.6vw, 1.18rem); color: var(--muted); max-width: 48ch; margin: 0 0 18px; }
-  .problem { font-size: 0.95rem; color: var(--faint); max-width: 48ch; margin: 0 0 28px; line-height: 1.55; }
-  .problem strong { color: var(--muted); font-weight: 600; }
+  .lede { font-size: clamp(1.04rem, 1.6vw, 1.18rem); color: var(--muted); max-width: 46ch; margin: 0 0 30px; }
   .cta-row { display: flex; flex-wrap: wrap; gap: 12px; margin-bottom: 34px; }
   .stats { display: flex; gap: 30px; flex-wrap: wrap; }
   .stat .n { font-family: var(--display); font-weight: 700; font-size: 1.7rem; color: var(--text); line-height: 1; }
@@ -230,18 +214,22 @@
   .sec-sub { color: var(--muted); font-size: 1.06rem; margin-top: 14px; max-width: 56ch; }
 
   /* guarded band */
-  .guarded { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
-  .guarded .lbl { color: var(--faint); margin-right: 6px; font-family: var(--mono); font-size: 0.74rem; text-transform: uppercase; letter-spacing: 0.1em; }
-  .guarded .chip { font-family: var(--mono); font-size: 0.86rem; color: var(--text); padding: 7px 14px; border-radius: 999px; background: var(--surface); border: 1px solid var(--line); transition: border-color .2s, color .2s; }
-  .guarded .chip:hover { border-color: var(--sig); color: var(--sig-2); }
+  .guarded { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 4px; font-family: var(--mono); font-size: 0.92rem; color: var(--muted); }
+  .guarded .lbl { color: var(--faint); margin-right: 8px; font-size: 0.76rem; text-transform: uppercase; letter-spacing: 0.08em; }
+  .guarded span.cmd { color: var(--text); padding: 0 2px; }
+  .guarded .sep { color: var(--faint); opacity: 0.5; }
 
-  /* feature grid */
-  .bento { display: grid; grid-template-columns: repeat(2, 1fr); gap: 18px; }
-  .card { padding: 30px; transition: transform .25s ease, border-color .25s; display: flex; flex-direction: column; }
+  /* bento feature grid */
+  .bento { display: grid; grid-template-columns: repeat(6, 1fr); gap: 14px; }
+  .card { padding: 26px; transition: transform .25s ease, border-color .25s; display: flex; flex-direction: column; }
   .card:hover { transform: translateY(-3px); border-color: var(--line-2); }
-  .card .ic { width: 36px; height: 36px; border-radius: 10px; display: grid; place-items: center; background: var(--sig-d); color: var(--sig-2); margin-bottom: 18px; }
-  .card h3 { font-family: var(--display); font-weight: 700; font-size: 1.2rem; letter-spacing: -0.02em; margin: 0 0 9px; }
-  .card p { color: var(--muted); margin: 0; font-size: 0.96rem; }
+  .card .ic { width: 34px; height: 34px; border-radius: 9px; display: grid; place-items: center; background: var(--sig-d); color: var(--sig-2); margin-bottom: 16px; }
+  .card h3 { font-family: var(--display); font-weight: 700; font-size: 1.16rem; letter-spacing: -0.02em; margin: 0 0 8px; }
+  .card p { color: var(--muted); margin: 0; font-size: 0.95rem; }
+  .card .span2 { grid-column: span 2; }
+  .card .span3 { grid-column: span 3; }
+  .card .span4 { grid-column: span 4; }
+  .card .row2 { grid-row: span 2; }
   /* featured card with version diagram */
   .feat-ver .vd { margin-top: auto; padding-top: 18px; }
   .feat-ver .vd-row { display: flex; align-items: center; gap: 12px; font-family: var(--mono); font-size: 0.8rem; padding: 7px 0; border-top: 1px solid var(--line); }
@@ -268,75 +256,30 @@
   .pipe .arr { color: var(--faint); }
 
   /* safety */
-  .safety { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; }
-  .safety .card { flex-direction: column; gap: 0; align-items: flex-start; }
-  .safety .card .ic { margin-bottom: 14px; flex: none; }
+  .safety { display: grid; grid-template-columns: repeat(2, 1fr); gap: 14px; }
+  .safety .card { flex-direction: row; gap: 16px; align-items: flex-start; }
+  .safety .card .ic { margin-bottom: 0; flex: none; }
   .safety .card h3 { font-size: 1.04rem; }
   .safety .card .txt p { margin-top: 4px; }
 
-  /* next strip */
-  .next-strip {
-    display: flex; flex-wrap: wrap; align-items: center; gap: 16px 28px;
-    padding: 22px 28px; border-radius: var(--radius-lg);
-  }
-  .next-strip p { margin: 0; color: var(--muted); font-size: 0.98rem; flex: 1; min-width: 240px; }
-  .next-strip p strong { color: var(--text); font-weight: 600; }
-  .next-strip a { flex: none; }
+  /* roadmap */
+  .phases { display: flex; flex-direction: column; gap: 10px; }
+  .phase { display: flex; align-items: center; gap: 18px; padding: 18px 24px; }
+  .phase .st { font-family: var(--mono); font-size: 0.8rem; width: 28px; height: 28px; border-radius: 50%; display: grid; place-items: center; flex: none; }
+  .phase.done .st { background: rgba(62,207,142,0.14); color: var(--trusted); border: 1px solid rgba(62,207,142,0.35); }
+  .phase.now .st { background: var(--sig-d); color: var(--sig); border: 1px solid rgba(255,122,26,0.4); }
+  .phase.next .st { background: var(--surface); color: var(--faint); border: 1px solid var(--line); }
+  .phase h3 { font-size: 1rem; margin: 0; font-family: var(--display); font-weight: 700; }
+  .phase p { color: var(--muted); margin: 3px 0 0; font-size: 0.9rem; }
+  .phase .state { margin-left: auto; font-family: var(--mono); font-size: 0.74rem; color: var(--faint); white-space: nowrap; }
 
-  /* install steps */
-  .steps { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; margin-bottom: 28px; }
-  .step-card { padding: 28px 26px; }
-  .step-card .num {
-    font-family: var(--mono); font-size: 0.74rem; color: var(--sig); letter-spacing: 0.06em;
-    margin-bottom: 14px; display: inline-flex; align-items: center; gap: 8px;
-  }
-  .step-card .num::before { content: ""; width: 18px; height: 1px; background: var(--sig); opacity: 0.55; }
-  .step-card h3 { font-family: var(--display); font-weight: 700; font-size: 1.15rem; letter-spacing: -0.02em; margin: 0 0 8px; }
-  .step-card p { color: var(--muted); margin: 0 0 14px; font-size: 0.94rem; }
-  .step-card .cmd {
-    display: block; font-family: var(--mono); font-size: 0.8rem; color: var(--text);
-    padding: 10px 12px; border-radius: 10px; background: rgba(0,0,0,0.35); border: 1px solid var(--line);
-    word-break: break-all;
-  }
-  .step-card .cmd .p { color: var(--sig); }
-  .plat { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-top: 8px; }
-  .plat .lbl { font-family: var(--mono); font-size: 0.74rem; color: var(--faint); text-transform: uppercase; letter-spacing: 0.08em; margin-right: 4px; }
-  .plat .chip { font-family: var(--mono); font-size: 0.82rem; color: var(--muted); padding: 6px 12px; border-radius: 999px; border: 1px solid var(--line); background: var(--surface); }
-
-  /* faq */
-  .faq { display: flex; flex-direction: column; gap: 10px; max-width: 820px; }
-  .faq details {
-    padding: 18px 22px; border-radius: var(--radius); border: 1px solid var(--line);
-    background: linear-gradient(180deg, var(--surface-2), var(--surface));
-    transition: border-color .2s;
-  }
-  .faq details[open] { border-color: var(--line-2); }
-  .faq summary {
-    cursor: pointer; font-family: var(--display); font-weight: 700; font-size: 1.05rem;
-    letter-spacing: -0.015em; list-style: none; display: flex; align-items: center; justify-content: space-between; gap: 16px;
-  }
-  .faq summary::-webkit-details-marker { display: none; }
-  .faq summary::after {
-    content: "+"; font-family: var(--mono); font-weight: 500; color: var(--faint); font-size: 1.1rem; flex: none;
-  }
-  .faq details[open] summary::after { content: "−"; color: var(--sig); }
-  .faq details p { color: var(--muted); margin: 12px 0 0; font-size: 0.96rem; line-height: 1.6; }
-  .faq details p code { font-size: 0.88em; }
-
-  /* slim closer */
-  .band {
-    padding: 40px 36px; text-align: center; position: relative; overflow: hidden;
-  }
-  .band::before {
-    content: ""; position: absolute; inset: 0; z-index: -1;
-    background: radial-gradient(ellipse 60% 120% at 50% 0%, rgba(255,122,26,0.14), transparent 60%);
-  }
-  .band h2 {
-    font-family: var(--display); font-weight: 700;
-    font-size: clamp(1.45rem, 2.8vw, 1.95rem); letter-spacing: -0.03em; margin: 0 0 10px;
-  }
-  .band p { color: var(--muted); margin: 0 0 22px; max-width: 40ch; margin-left: auto; margin-right: auto; font-size: 1rem; }
-  .band .cta-row { justify-content: center; margin-bottom: 0; }
+  /* cta band */
+  .band { padding: 52px 40px; text-align: center; position: relative; overflow: hidden; }
+  .band::before { content: ""; position: absolute; inset: 0; z-index: -1; background: radial-gradient(ellipse 60% 120% at 50% 0%, rgba(255,122,26,0.16), transparent 60%); }
+  .band h2 { font-family: var(--display); font-weight: 700; font-size: clamp(1.8rem, 3.6vw, 2.6rem); letter-spacing: -0.03em; margin: 0 0 12px; }
+  .band p { color: var(--muted); margin: 0 0 26px; }
+  .band .install { margin-top: 22px; display: inline-flex; align-items: center; gap: 10px; font-family: var(--mono); font-size: 0.86rem; color: var(--muted); padding: 11px 16px; border-radius: 11px; background: rgba(0,0,0,0.35); border: 1px solid var(--line); }
+  .band .install .p { color: var(--sig); } .band .install b { color: var(--text); font-weight: 600; }
 
   footer { padding: 56px 0 80px; }
   .foot { display: flex; flex-wrap: wrap; gap: 18px; justify-content: space-between; align-items: center; }
@@ -345,16 +288,10 @@
   .foot-links a:hover { color: var(--sig-2); }
   .foot-meta { font-family: var(--mono); color: var(--faint); font-size: 0.78rem; }
 
-  /* github corner — hidden while hero GitHub CTA is on screen */
-  .gh-corner {
-    position: fixed; right: 20px; bottom: 20px; z-index: 70; width: 46px; height: 46px; border-radius: 50%;
-    padding: 0; display: grid; place-items: center; color: var(--text);
-    opacity: 0; pointer-events: none; transform: translateY(10px) scale(0.92);
-    transition: opacity .28s ease, transform .28s ease, color .2s, border-color .2s;
-  }
-  .gh-corner.is-on { opacity: 1; pointer-events: auto; transform: none; }
+  /* github corner */
+  .gh-corner { position: fixed; right: 20px; bottom: 20px; z-index: 70; width: 46px; height: 46px; border-radius: 50%; padding: 0; display: grid; place-items: center; color: var(--text); transition: transform .18s, color .2s, border-color .2s; }
   .gh-corner svg { width: 21px; height: 21px; display: block; }
-  .gh-corner.is-on:hover { color: var(--sig-2); border-color: var(--sig); transform: translateY(-2px); }
+  .gh-corner:hover { color: var(--sig-2); border-color: var(--sig); transform: translateY(-2px); }
 
   /* reveal motion */
   .reveal { opacity: 0; transform: translateY(20px); transition: opacity .8s cubic-bezier(.2,.7,.2,1), transform .8s cubic-bezier(.2,.7,.2,1); }
@@ -365,11 +302,13 @@
   @media (max-width: 980px) {
     .hero-grid { grid-template-columns: 1fr; gap: 44px; }
     .hero { padding: 56px 0 36px; }
-    .steps, .safety { grid-template-columns: repeat(2, 1fr); }
+    .bento { grid-template-columns: repeat(2, 1fr); }
+    .card .span2, .card .span3, .card .span4 { grid-column: span 2; }
+    .card .row2 { grid-row: auto; }
   }
   @media (max-width: 760px) {
     .nav-links { display: none; }
-    .lanes, .steps, .safety, .bento { grid-template-columns: 1fr; }
+    .lanes, .safety { grid-template-columns: 1fr; }
     section.block { padding: 64px 0; }
   }
   @media (max-width: 520px) {
@@ -378,8 +317,11 @@
     .stats { gap: 22px; }
     .term-body { font-size: 0.76rem; padding: 15px; min-height: 200px; }
     .t-row .lab, .t-verdict .vl { width: 64px; }
+    .phase .state { display: none; }
     .band { padding: 38px 22px; }
     .gh-corner { width: 42px; height: 42px; right: 14px; bottom: 14px; }
+    .bento { grid-template-columns: 1fr; }
+    .card .span2, .card .span3, .card .span4 { grid-column: span 1; }
   }
 
   /* fallback + reduced motion */
@@ -398,6 +340,7 @@
 <body>
   <div class="atmos" aria-hidden="true"><div class="glow"></div><div class="grid"></div></div>
   <div class="vignette" aria-hidden="true"></div>
+  <div class="grain" aria-hidden="true"></div>
 
   <nav class="bar">
     <div class="nav" id="nav">
@@ -407,10 +350,10 @@
       <div class="nav-links">
         <a href="#how">How it works</a>
         <a href="#features">Features</a>
-        <a href="docs.html">Docs</a>
-        <a href="roadmap.html">Roadmap</a>
+        <a href="#safety">Safety</a>
+        <a href="#roadmap">Roadmap</a>
       </div>
-      <a class="nav-cta" href="#install">Install <span class="arr">→</span></a>
+      <a class="nav-cta" href="#get">Get started <span class="arr">→</span></a>
     </div>
   </nav>
 
@@ -419,16 +362,16 @@
       <div class="hero-grid">
         <div class="hero-text">
           <div class="kicker reveal"><span class="pulse"></span> SUPPLY-CHAIN GUARD <span class="bar-sep">/</span> LOCAL-FIRST</div>
-          <h1 class="display reveal d1">Supported installs run the <em>gauntlet</em> before they reach you.</h1>
-          <p class="lede reveal d2">local-sec sits in front of your package tools. For supported artifact paths, it stages the package, scans it, checks advisories, then returns <strong style="color:var(--trusted);font-weight:600">trusted</strong>, <strong style="color:var(--risky);font-weight:600">risky</strong>, or <strong style="color:var(--block);font-weight:600">blocked</strong>. Project lockfile installs use an audited rewrite without artifact staging; one-shot paths can defer staging for review or be blocked.</p>
+          <h1 class="display reveal d1">Every install runs the <em>gauntlet</em> before it reaches you.</h1>
+          <p class="lede reveal d2">local-sec stages, statically scans, and advisory-checks each <code>npm</code>, <code>pip</code>, <code>uv</code>, and <code>curl</code> install — then decides: trusted, risky, or blocked. Fail-closed, privacy-first, one binary with zero third-party dependencies.</p>
           <div class="cta-row reveal d3">
-            <a class="btn btn-primary" href="#install">Install local-sec</a>
-            <a class="btn btn-ghost" id="hero-github" href="https://github.com/rutts29/local-sec" target="_blank" rel="noopener">View on GitHub <span class="arr">↗</span></a>
+            <a class="btn btn-primary" href="#get">Get started</a>
+            <a class="btn btn-ghost" href="https://github.com/rutts29/local-sec" target="_blank" rel="noopener">View on GitHub <span class="arr">↗</span></a>
           </div>
           <div class="stats reveal d4">
-            <div class="stat"><div class="n">3<span class="u">lanes</span></div><div class="l">trusted · risky · blocked</div></div>
+            <div class="stat"><div class="n">9<span class="u">cmds</span></div><div class="l">install commands guarded</div></div>
             <div class="stat"><div class="n">7<span class="u">day</span></div><div class="l">fresh-package maturity window</div></div>
-            <div class="stat"><div class="n">1<span class="u">bin</span></div><div class="l">single binary · local-first</div></div>
+            <div class="stat"><div class="n">0<span class="u">deps</span></div><div class="l">third-party go modules</div></div>
           </div>
         </div>
 
@@ -456,19 +399,19 @@
       <div class="sec-head reveal">
         <div class="sec-kick">01 — How it works</div>
         <h2 class="sec-title">Three lanes. One honest verdict.</h2>
-        <p class="sec-sub">Each guarded request gets one decision, logged on your machine. When it’s unsure, it blocks instead of allowing.</p>
+        <p class="sec-sub">Every decision lands in exactly one lane, recorded in a local JSONL and SQLite log. local-sec never silently picks a different version than you asked for — and ambiguity blocks, it doesn't allow.</p>
       </div>
-      <div class="pipe reveal" style="margin-top:0;margin-bottom:32px">
+      <div class="lanes">
+        <div class="lane trusted glass sheen reveal"><span class="pill"><i></i>trusted</span><h3>Install proceeds</h3><p>A mature version with a clean staged scan, no unscanned dependency graph, and clean advisories.</p></div>
+        <div class="lane risky glass sheen reveal d1"><span class="pill"><i></i>risky</span><h3>Prompt &amp; review</h3><p>Fresh packages, unverified maintainers, lifecycle scripts, or direct downloads — queued to a local inbox.</p></div>
+        <div class="lane block glass sheen reveal d2"><span class="pill"><i></i>block</span><h3>Hard stop</h3><p>Known malware, <code>curl&nbsp;|&nbsp;sh</code>, plain-HTTP, credential access with network calls, or unresolvable identity.</p></div>
+      </div>
+      <div class="pipe reveal d2">
         <span class="step">preflight</span><span class="arr">→</span>
         <span class="step">stage</span><span class="arr">→</span>
         <span class="step">scan</span><span class="arr">→</span>
         <span class="step">advisory</span><span class="arr">→</span>
         <span class="step">verdict</span>
-      </div>
-      <div class="lanes">
-        <div class="lane trusted glass sheen reveal"><span class="pill"><i></i>trusted</span><h3>Install proceeds</h3><p>Mature package, clean scan, clean advisories. The install continues as you asked.</p></div>
-        <div class="lane risky glass sheen reveal d1"><span class="pill"><i></i>risky</span><h3>Review first</h3><p>Too-new packages, install scripts, direct downloads, or other red flags — held for you in a local inbox.</p></div>
-        <div class="lane block glass sheen reveal d2"><span class="pill"><i></i>block</span><h3>Hard stop</h3><p>Known malware, <code>curl&nbsp;|&nbsp;sh</code>, plain HTTP, credential theft patterns, or an identity that can’t be resolved.</p></div>
       </div>
     </div>
   </section>
@@ -477,47 +420,57 @@
     <div class="wrap">
       <div class="sec-head reveal">
         <div class="sec-kick">02 — What it does</div>
-        <h2 class="sec-title">What happens on a supported, stageable install.</h2>
-        <p class="sec-sub">Four capabilities that keep the guard strict without getting in the way when the path is clean.</p>
+        <h2 class="sec-title">Strict by default. Quiet when it can be.</h2>
+        <p class="sec-sub">local-sec resolves a mature version, stages the real bytes, scans them, checks advisories, then decides.</p>
       </div>
 
-      <div class="guarded reveal" style="margin-bottom:34px">
+      <div class="guarded reveal" style="margin-bottom:30px">
         <span class="lbl">Guards</span>
-        <span class="chip">npm</span>
-        <span class="chip">npx</span>
-        <span class="chip">pip</span>
-        <span class="chip">pip3</span>
-        <span class="chip">uv</span>
-        <span class="chip">uvx</span>
-        <span class="chip">pipx</span>
-        <span class="chip">curl</span>
-        <span class="chip">wget</span>
+        <span class="cmd">npm</span><span class="sep">·</span>
+        <span class="cmd">npx</span><span class="sep">·</span>
+        <span class="cmd">pip</span><span class="sep">·</span>
+        <span class="cmd">pip3</span><span class="sep">·</span>
+        <span class="cmd">uv</span><span class="sep">·</span>
+        <span class="cmd">uvx</span><span class="sep">·</span>
+        <span class="cmd">pipx</span><span class="sep">·</span>
+        <span class="cmd">curl</span><span class="sep">·</span>
+        <span class="cmd">wget</span>
       </div>
 
       <div class="bento">
-        <div class="card glass sheen feat-ver reveal">
+        <div class="card glass sheen feat-ver span4 row2 reveal">
           <div class="ic"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12h4l3-9 4 18 3-9h4"/></svg></div>
-          <h3>Doesn’t trust “latest” by default</h3>
-          <p>Packages inside a 7-day publish window stay under review. Mature versions win over brand-new <code>latest</code>.</p>
+          <h3>Mature-version selection</h3>
+          <p>The newest stable release beats a too-new <code>latest</code>. Packages inside a 7-day publish window get scrutinized instead of trusted by default.</p>
           <div class="vd">
             <div class="vd-row latest"><span class="vd-tag">latest</span><span class="vd-bar"><i></i></span><span class="vd-val">published 2d</span></div>
             <div class="vd-row mature"><span class="vd-tag">mature</span><span class="vd-bar"><i></i></span><span class="vd-val">selected ✓</span></div>
           </div>
         </div>
-        <div class="card glass sheen reveal d1">
+        <div class="card glass sheen span2 reveal d1">
           <div class="ic"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg></div>
-          <h3>Looks for dangerous behavior</h3>
-          <p>Scans staged packages for credential access, unexpected network use, obfuscation, persistence, install scripts, and risky agent or editor paths.</p>
+          <h3>Static artifact scan</h3>
+          <p>Credentials, network, obfuscation, persistence, Python startup hooks, npm lifecycle scripts, agent/editor paths.</p>
         </div>
-        <div class="card glass sheen reveal d2">
+        <div class="card glass sheen span2 reveal d2">
           <div class="ic"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg></div>
-          <h3>Cross-checks known vulnerabilities</h3>
-          <p>Queries OSV by default. Uses Socket and Snyk when those CLIs are already installed.</p>
+          <h3>Advisory enrichment</h3>
+          <p>OSV by default; Socket and Snyk when their CLIs are present. Fails closed if a refresh fails without a cache.</p>
         </div>
-        <div class="card glass sheen reveal">
+        <div class="card glass sheen span2 reveal">
           <div class="ic"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 12l2 2 4-4"/><path d="M12 3 4 6v6c0 5 3.4 8.5 8 11 4.6-2.5 8-6 8-11V6l-8-3Z"/></svg></div>
-          <h3>Approvals are byte-exact</h3>
-          <p>You approve package + version + SHA-256 together. Different bytes never ride on an old approval.</p>
+          <h3>Exact approvals</h3>
+          <p>Persistent approvals are package + version + SHA-256. They can't silently cover different bytes than you reviewed.</p>
+        </div>
+        <div class="card glass sheen span2 reveal d1">
+          <div class="ic"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3v4a1 1 0 0 0 1 1h4"/><path d="M17 21H7a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h7l5 5v11a2 2 0 0 1-2 2Z"/></svg></div>
+          <h3>Secret-free evidence</h3>
+          <p>Content-hashed, redacted bundles ready for sandbox detonation, remote review, or an LLM analyst.</p>
+        </div>
+        <div class="card glass sheen span2 reveal d2">
+          <div class="ic"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg></div>
+          <h3>Local-first &amp; private</h3>
+          <p>Metadata-only. Skips source, <code>.env</code>, SSH keys, shell history, agent transcripts. Advisory queries send only name/version tuples.</p>
         </div>
       </div>
     </div>
@@ -528,102 +481,44 @@
       <div class="sec-head reveal">
         <div class="sec-kick">03 — Safety &amp; privacy</div>
         <h2 class="sec-title">Fail-closed is the feature.</h2>
-        <p class="sec-sub">A security tool that guesses is a liability. Principles that don’t belong in a feature list.</p>
+        <p class="sec-sub">A security tool that guesses is a liability. local-sec is built to refuse first and explain why.</p>
       </div>
       <div class="safety">
-        <div class="card glass reveal"><div class="ic"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3 4 6v6c0 5 3.4 8.5 8 11 4.6-2.5 8-6 8-11V6l-8-3Z"/><path d="m9 12 2 2 4-4"/></svg></div><div class="txt"><h3>Fails closed, always</h3><p>If an advisory refresh fails with no cache, or identity can’t be resolved, the run blocks. It never degrades to “allow.”</p></div></div>
-        <div class="card glass reveal d1"><div class="ic"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20Z"/><path d="M2 12h20"/></svg></div><div class="txt"><h3>No telemetry, ever</h3><p>Does not phone home. Optional advisory lookups send only package name and version — not projects or machine details.</p></div></div>
-        <div class="card glass reveal d2"><div class="ic"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg></div><div class="txt"><h3>Secrets stay put</h3><p>Inventory reads allowlisted metadata only. Evidence is redacted of secrets and host paths before any handoff leaves the machine.</p></div></div>
+        <div class="card glass reveal"><div class="ic"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3 4 6v6c0 5 3.4 8.5 8 11 4.6-2.5 8-6 8-11V6l-8-3Z"/><path d="m9 12 2 2 4-4"/></svg></div><div class="txt"><h3>Fails closed, always</h3><p>If an advisory refresh fails with no fresh cache, or identity can't be resolved, the run blocks — it never degrades to "allow".</p></div></div>
+        <div class="card glass reveal d1"><div class="ic"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20Z"/><path d="M2 12h20"/></svg></div><div class="txt"><h3>No telemetry, ever</h3><p>Nothing about your machine or projects is sent anywhere. Advisory queries send only normalized name/version tuples to OSV.</p></div></div>
+        <div class="card glass reveal d2"><div class="ic"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3v4a1 1 0 0 0 1 1h4"/><path d="M17 21H7a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h7l5 5v11a2 2 0 0 1-2 2Z"/><path d="m9 13 2 2 4-4"/></svg></div><div class="txt"><h3>Metadata-first scanner</h3><p>Reads only allowlisted metadata — lockfiles, package metadata, receipts. No source code, secrets, or history.</p></div></div>
+        <div class="card glass reveal d3"><div class="ic"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg></div><div class="txt"><h3>Redacted before handoff</h3><p>Evidence is scrubbed of secrets and host paths before reaching any sandbox, remote host, LLM, or approval message.</p></div></div>
       </div>
     </div>
   </section>
 
-  <section class="block" id="install">
+  <section class="block" id="roadmap">
     <div class="wrap">
       <div class="sec-head reveal">
-        <div class="sec-kick">04 — Install</div>
-        <h2 class="sec-title">Up and guarding in three steps.</h2>
-        <p class="sec-sub">Download a checksum-verified release, install shell shims, then keep using your package tools as usual.</p>
+        <div class="sec-kick">04 — Roadmap</div>
+        <h2 class="sec-title">A credible v1, sequenced around host safety.</h2>
+        <p class="sec-sub">The local-first baseline is done. Dynamic analysis and an LLM analyst come later — deterministic policy always keeps final authority.</p>
       </div>
-
-      <div class="steps">
-        <div class="step-card glass sheen reveal">
-          <div class="num">STEP 01</div>
-          <h3>Download the binary</h3>
-          <p>Grab a release for your platform and verify it against <code>checksums.txt</code>.</p>
-          <a class="btn btn-primary" href="https://github.com/rutts29/local-sec#release-model" target="_blank" rel="noopener" style="margin-top:4px">Download releases <span class="arr">↗</span></a>
-        </div>
-        <div class="step-card glass sheen reveal d1">
-          <div class="num">STEP 02</div>
-          <h3>Install shims</h3>
-          <p>Run the command, then add its printed shim directory before package-manager directories in your <code>PATH</code>.</p>
-          <span class="cmd"><span class="p">$</span> lsec install-shims</span>
-        </div>
-        <div class="step-card glass sheen reveal d2">
-          <div class="num">STEP 03</div>
-          <h3>Install as usual</h3>
-          <p>Use supported npm, pip, uv, curl, and related commands. Guards surface risk before the requested install runs.</p>
-          <span class="cmd"><span class="p">$</span> npm install &lt;package&gt;</span>
-        </div>
+      <div class="phases reveal">
+        <div class="phase done glass"><div class="st">✓</div><div><h3>Phase R — local baseline</h3><p>Focused preflight modules, embedded scanner data, redacted evidence bundles.</p></div><span class="state">done</span></div>
+        <div class="phase now glass"><div class="st">⟳</div><div><h3>Phase 2 — local intelligence</h3><p>Recursive npm staging, repeat-maintainer history, richer exposure correlation.</p></div><span class="state">in flight</span></div>
+        <div class="phase next glass"><div class="st">3</div><div><h3>Phase 3 — Docker detonation</h3><p>Controlled dynamic analysis with fake-home canaries and sinkholed credentials.</p></div><span class="state">fixture CLI</span></div>
+        <div class="phase next glass"><div class="st">+</div><div><h3>Phases 4–8</h3><p>Remote sandbox, LLM analyst, approval notifications, SBOM integrations, macOS VM detonation.</p></div><span class="state">planned</span></div>
       </div>
-
-      <div class="plat reveal">
-        <span class="lbl">Platforms</span>
-        <span class="chip">macOS arm64</span>
-        <span class="chip">macOS amd64</span>
-        <span class="chip">Linux amd64</span>
-        <span class="chip">Linux arm64</span>
-        <span class="chip">Windows amd64</span>
-      </div>
-
-      <p class="reveal" style="margin-top:28px;display:flex;flex-wrap:wrap;gap:12px">
-        <a class="btn btn-ghost" href="docs.html">Read the docs <span class="arr">→</span></a>
-        <a class="btn btn-ghost" href="roadmap.html">Roadmap <span class="arr">→</span></a>
-      </p>
+      <p class="reveal" style="margin-top:24px"><a class="btn btn-ghost" href="https://github.com/rutts29/local-sec/blob/main/docs/roadmap.md" target="_blank" rel="noopener">Read the full roadmap <span class="arr">→</span></a></p>
     </div>
   </section>
 
-  <section class="block" id="faq">
-    <div class="wrap">
-      <div class="sec-head reveal">
-        <div class="sec-kick">05 — FAQ</div>
-        <h2 class="sec-title">Straight answers.</h2>
-        <p class="sec-sub">Only what the sections above don’t already settle.</p>
-      </div>
-      <div class="faq reveal">
-        <details>
-          <summary>Does local-sec change the package version I asked for?</summary>
-          <p>No. It never silently installs a different version than you requested. It may prefer a mature release when you ask for <code>latest</code>, and it will block or queue review when the choice is unsafe — but it won’t swap versions behind your back.</p>
-        </details>
-        <details>
-          <summary>Does it send data about my machine or projects?</summary>
-          <p>No telemetry. Optional advisory checks send only package name and version to services like OSV.</p>
-        </details>
-        <details>
-          <summary>Does it work offline?</summary>
-          <p>Core guarding and scanning run locally. Advisory enrichment needs network when no cache is available — and if that refresh fails, local-sec fails closed rather than guessing.</p>
-        </details>
-      </div>
-    </div>
-  </section>
-
-  <section class="block" id="next" style="padding-top:12px;padding-bottom:28px">
-    <div class="wrap">
-      <div class="next-strip glass reveal">
-        <p><strong>What’s next:</strong> richer local history, sandboxed detonation, and optional analyst assist — deterministic policy always keeps final authority. <a href="roadmap.html" style="color:var(--sig-2)">Full roadmap →</a></p>
-      </div>
-    </div>
-  </section>
-
-  <section class="block" id="close" style="padding-top:12px;padding-bottom:56px">
+  <section class="block" id="get">
     <div class="wrap">
       <div class="band glass reveal">
-        <h2>Ready to put a guard in front of your installs?</h2>
-        <p>Three steps to download, shim, and keep using your tools as usual.</p>
-        <div class="cta-row">
-          <a class="btn btn-primary" href="#install">Install local-sec</a>
-          <a class="btn btn-ghost" href="docs.html">Docs <span class="arr">→</span></a>
+        <h2>Install with scrutiny, not without it.</h2>
+        <p>Grab a checksum-verified release, then let local-sec guard your installs.</p>
+        <div style="display:flex;gap:12px;justify-content:center;flex-wrap:wrap">
+          <a class="btn btn-primary" href="https://github.com/rutts29/local-sec#release-model" target="_blank" rel="noopener">Get releases</a>
+          <a class="btn btn-ghost" href="https://github.com/rutts29/local-sec/blob/main/docs/technical-overview.md" target="_blank" rel="noopener">Documentation <span class="arr">→</span></a>
         </div>
+        <div class="install"><span class="p">$</span> <b>lsec guard npm install &lt;package&gt;</b></div>
       </div>
     </div>
   </section>
@@ -632,15 +527,16 @@
     <div class="wrap foot">
       <a class="brand" href="#top"><span class="ch">❯</span><span class="nm">local-sec</span></a>
       <div class="foot-links">
-        <a href="docs.html">Docs</a>
-        <a href="roadmap.html">Roadmap</a>
-        <a href="#faq">FAQ</a>
+        <a href="https://github.com/rutts29/local-sec" target="_blank" rel="noopener">GitHub</a>
+        <a href="https://github.com/rutts29/local-sec#readme" target="_blank" rel="noopener">README</a>
+        <a href="https://github.com/rutts29/local-sec/blob/main/docs/technical-overview.md" target="_blank" rel="noopener">Technical overview</a>
+        <a href="https://github.com/rutts29/local-sec/blob/main/docs/roadmap.md" target="_blank" rel="noopener">Roadmap</a>
       </div>
-      <div class="foot-meta">v0.1.0 · single binary</div>
+      <div class="foot-meta">v0.1.0 · local-first · fail-closed · no telemetry</div>
     </div>
   </footer>
 
-  <a class="gh-corner glass sheen" id="gh-corner" href="https://github.com/rutts29/local-sec" target="_blank" rel="noopener" aria-label="View local-sec on GitHub" aria-hidden="true" tabindex="-1">
+  <a class="gh-corner glass sheen" href="https://github.com/rutts29/local-sec" target="_blank" rel="noopener" aria-label="View local-sec on GitHub">
     <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 2C6.48 2 2 6.58 2 12.25c0 4.53 2.87 8.37 6.84 9.73.5.1.68-.22.68-.49v-1.7c-2.78.62-3.37-1.37-3.37-1.37-.46-1.18-1.11-1.5-1.11-1.5-.91-.64.07-.62.07-.62 1 .07 1.53 1.06 1.53 1.06.89 1.56 2.34 1.11 2.91.85.09-.66.35-1.11.63-1.37-2.22-.26-4.56-1.14-4.56-5.06 0-1.12.39-2.03 1.03-2.75-.1-.26-.45-1.3.1-2.7 0 0 .84-.28 2.75 1.05A9.4 9.4 0 0 1 12 6.84c.85 0 1.71.12 2.51.34 1.91-1.33 2.75-1.05 2.75-1.05.55 1.4.2 2.44.1 2.7.64.72 1.03 1.63 1.03 2.75 0 3.93-2.34 4.8-4.57 5.05.36.32.68.94.68 1.9v2.82c0 .27.18.6.69.49A10.26 10.26 0 0 0 22 12.25C22 6.58 17.52 2 12 2Z"/></svg>
   </a>
 
@@ -742,49 +638,11 @@
   function tickItem(it) { var s = mk("span", "ti " + it[2]); s.appendChild(mk("i")); s.appendChild(document.createTextNode(it[0] + " ")); s.appendChild(mk("em", null, it[1])); return s; }
   for (var k = 0; k < 2; k++) { items.forEach(function (it) { tk.appendChild(tickItem(it)); }); }
 
-  /* ---------- sticky controls: one Install / one GitHub visible at a time ---------- */
+  /* ---------- nav scrolled state ---------- */
   var nav = document.getElementById("nav");
-  var navCta = document.querySelector(".nav-cta");
-  var hero = document.getElementById("top");
-  var ghCorner = document.getElementById("gh-corner");
-  var heroGithub = document.getElementById("hero-github");
-  var closeBand = document.getElementById("close");
-  var faqSec = document.getElementById("faq");
-
-  function inView(el, pad) {
-    if (!el) return false;
-    var r = el.getBoundingClientRect();
-    var p = pad || 48;
-    return r.bottom > p && r.top < window.innerHeight - p;
-  }
-
-  function onScroll() {
-    var y = window.scrollY;
-    if (y > 12) nav.classList.add("scrolled"); else nav.classList.remove("scrolled");
-    var pastHero = hero ? y > hero.offsetHeight * 0.55 : y > 280;
-    /* Nav Install stays through Features/Safety/Install; hide from FAQ onward (and on hero) */
-    var heroInstall = document.querySelector("#top .cta-row .btn-primary");
-    var hideNavInstall = inView(heroInstall) || inView(faqSec) || inView(closeBand);
-    if (navCta) {
-      if (pastHero && !hideNavInstall) navCta.classList.add("is-on");
-      else navCta.classList.remove("is-on");
-    }
-    /* GitHub: hero button while in view; float otherwise */
-    if (ghCorner) {
-      var heroGhVisible = false;
-      if (heroGithub) {
-        var r = heroGithub.getBoundingClientRect();
-        heroGhVisible = r.bottom > 48 && r.top < window.innerHeight;
-      }
-      var showFloat = !heroGhVisible;
-      ghCorner.classList.toggle("is-on", showFloat);
-      ghCorner.setAttribute("aria-hidden", showFloat ? "false" : "true");
-      ghCorner.tabIndex = showFloat ? 0 : -1;
-    }
-  }
+  function onScroll() { if (window.scrollY > 12) nav.classList.add("scrolled"); else nav.classList.remove("scrolled"); }
   onScroll();
   window.addEventListener("scroll", onScroll, { passive: true });
-  window.addEventListener("resize", onScroll, { passive: true });
 
   /* ---------- reveal on scroll ---------- */
   var io = ("IntersectionObserver" in window) ? new IntersectionObserver(function (es) {

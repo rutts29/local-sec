@@ -135,23 +135,16 @@ func TestGrypeReceivesAcceptedCycloneDXSBOMObservationPaths(t *testing.T) {
 	}
 	got := string(args)
 	gotArgs := strings.Fields(got)
-	if len(gotArgs) != 9 {
-		t.Fatalf("grype args = %#v, want three invocations", gotArgs)
+	wantArgs := []string{
+		"sbom:" + safeA, "-o", "json",
+		"sbom:" + safeB, "-o", "json",
+		"sbom:" + acceptedUnderNodeModules, "-o", "json",
 	}
-	for i := 0; i < len(gotArgs); i += 3 {
-		if !strings.HasPrefix(gotArgs[i], "sbom:") || gotArgs[i+1] != "-o" || gotArgs[i+2] != "json" {
-			t.Fatalf("grype args = %#v, want copied SBOM invocations", gotArgs)
-		}
-		copied := strings.TrimPrefix(gotArgs[i], "sbom:")
-		if !strings.Contains(copied, "lsec-scan-provider-") || !filepath.IsAbs(copied) {
-			t.Fatalf("grype sbom arg = %q, want private provider copy", gotArgs[i])
-		}
+	if strings.Join(gotArgs, "\n") != strings.Join(wantArgs, "\n") {
+		t.Fatalf("grype args = %#v, want %#v", gotArgs, wantArgs)
 	}
 	for _, unwanted := range []string{
 		project,
-		safeA,
-		safeB,
-		acceptedUnderNodeModules,
 		filepath.Join(project, "not-cyclonedx", "sbom.json"),
 		filepath.Join(project, "malformed", "bad.cdx.json"),
 		filepath.Join(project, "src", "index.js"),
@@ -328,19 +321,10 @@ func TestGrypeKeepsEarlierFindingsAndCountsFailedInput(t *testing.T) {
 	writeFile(t, first, safeCycloneDXSBOM)
 	writeFile(t, second, safeCycloneDXSBOM)
 	writeFakeTool(t, root, "grype", `#!/bin/sh
-count_file=`+shellQuote(filepath.Join(root, "grype-count"))+`
-count=0
-if [ -f "$count_file" ]; then
-  IFS= read -r count < "$count_file"
-fi
-count=$((count + 1))
-printf '%s' "$count" > "$count_file"
-if [ "$count" -eq 1 ]; then
-  echo '{"matches":[{"vulnerability":{"id":"CVE-retained","severity":"high"},"artifact":{"purl":"pkg:npm/left-pad@1.3.0"}}]}'
-else
-  echo 'secret provider output from /private/project/bom.json' >&2
-  exit 2
-fi
+case "$1" in
+  *'/a/'*) echo '{"matches":[{"vulnerability":{"id":"CVE-retained","severity":"high"},"artifact":{"purl":"pkg:npm/left-pad@1.3.0"}}]}' ;;
+  *) echo 'secret provider output from /private/project/bom.json' >&2; exit 2 ;;
+esac
 `)
 	t.Setenv("PATH", root)
 
@@ -357,38 +341,5 @@ fi
 	}
 	if snapshot.Error != "execution_failed" || strings.Contains(snapshot.Error, "secret") || strings.Contains(snapshot.Error, project) {
 		t.Fatalf("snapshot error = %q, want redacted category", snapshot.Error)
-	}
-}
-
-func TestGrypeReadsCopiedSBOMAfterOriginalChanges(t *testing.T) {
-	root := t.TempDir()
-	project := filepath.Join(root, "project")
-	sbom := filepath.Join(project, "bom.json")
-	seenArg := filepath.Join(root, "seen-arg")
-	seenContent := filepath.Join(root, "seen-content")
-	writeFile(t, sbom, safeCycloneDXSBOM)
-	writeFakeTool(t, root, "grype", `#!/bin/sh
-sbom="${1#sbom:}"
-printf '%s' "$sbom" > `+shellQuote(seenArg)+`
-printf '{"bomFormat":"CycloneDX","components":[{"name":"evil"}]}\n' > `+shellQuote(sbom)+`
-/bin/cat "$sbom" > `+shellQuote(seenContent)+`
-echo '{"matches":[{"vulnerability":{"id":"CVE-copy","severity":"critical"},"artifact":{"purl":"pkg:npm/left-pad@1.3.0"}}]}'
-`)
-	t.Setenv("PATH", root)
-
-	findings, diagnostics, snapshot := runGrypeProvider(t.Context(), "run", []ScanObservation{{SourceType: "cyclonedx_sbom", SourcePath: sbom}})
-
-	if len(diagnostics) != 0 || snapshot.Status != "ok" {
-		t.Fatalf("diagnostics = %#v snapshot = %#v, want successful copied read", diagnostics, snapshot)
-	}
-	if len(findings) != 1 || findings[0].ProviderRecordID != "CVE-copy" || findings[0].SourcePath != sbom {
-		t.Fatalf("findings = %#v, want finding mapped to original SBOM path", findings)
-	}
-	arg := readTextFile(t, seenArg)
-	if arg == sbom || !strings.Contains(arg, "lsec-scan-provider-") {
-		t.Fatalf("grype arg = %q, want provider temp copy", arg)
-	}
-	if got := readTextFile(t, seenContent); got != safeCycloneDXSBOM {
-		t.Fatalf("copied SBOM content = %q, want original safe content", got)
 	}
 }

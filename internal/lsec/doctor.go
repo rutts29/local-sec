@@ -71,13 +71,15 @@ func checkTools(stdout io.Writer) {
 		{name: "osv-scanner", state: "active scan/advisory", role: "npm lockfile advisory scan", next: "install only if you want npm lockfile provider coverage"},
 		{name: "pip-audit", state: "active scan/advisory", role: "pinned Python requirements advisory scan", next: "install only if you want pinned requirements coverage"},
 		{name: "grype", state: "active scan/advisory", role: "accepted CycloneDX SBOM advisory scan", next: "install only if you want SBOM advisory coverage"},
-		{name: "syft", state: "active scan/inventory", role: "project SBOM inventory via CycloneDX JSON", next: "install only if you want Syft inventory enrichment"},
-		{name: "cargo", state: "active scan/audit", role: "cargo vet audit when plugin installed", next: "install cargo-vet plugin only if you want Rust audit evidence"},
-		{name: "bumblebee", state: "active scan/endpoint", role: "endpoint tool detection probe", next: "install only if you want endpoint correlation hooks"},
 	})
 	checkOptionalToolCapabilities(stdout, "advisory amplifiers:", []toolCapability{
 		{name: "socket", state: "preflight amplifier", role: "optional package preflight enrichment", next: "authenticate only if you want Socket enrichment"},
 		{name: "snyk", state: "preflight amplifier", role: "optional npm preflight enrichment", next: "authenticate only if you want Snyk enrichment"},
+	})
+	checkOptionalToolCapabilities(stdout, "detected-only / future integrations:", []toolCapability{
+		{name: "syft", state: "detected-only", role: "future SBOM inventory input", next: "no local-sec action yet"},
+		{name: "bumblebee", state: "detected-only", role: "future endpoint correlation input", next: "no local-sec action yet"},
+		{name: "cargo-vet", state: "detected-only", role: "future Rust audit input", next: "no local-sec action yet"},
 	})
 	checkOptionalToolCapabilities(stdout, "runtime/local evidence tools:", []toolCapability{
 		{name: "docker", state: "fixture/local evidence", role: "docker-fixture sandbox runner", next: "use only for controlled fixture runs"},

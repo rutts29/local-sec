@@ -156,17 +156,6 @@ type macOSDetonationFixture struct {
 	Package        MacOSDetonationPackage
 	ArtifactSHA256 string
 	ExpectedVM     MacOSDetonationVMRequirement
-	Result         macOSDetonationFixtureResult
-}
-
-type macOSDetonationFixtureResult struct {
-	VMInstanceIDPrefix       string
-	VMInstanceIDSuffixDigits int
-	ProcessImages            []string
-	FileNames                []string
-	NetworkHosts             []string
-	PersistenceTargets       []string
-	CanaryNames              []string
 }
 
 var macOSDetonationFixtures = map[string]macOSDetonationFixture{
@@ -180,15 +169,6 @@ var macOSDetonationFixtures = map[string]macOSDetonationFixture{
 		ExpectedVM: MacOSDetonationVMRequirement{
 			Provider: "fixture-provider",
 			ImageID:  "macos-15-fixture-v1",
-		},
-		Result: macOSDetonationFixtureResult{
-			VMInstanceIDPrefix:       "vm-fixture-",
-			VMInstanceIDSuffixDigits: 3,
-			ProcessImages:            []string{"node"},
-			FileNames:                []string{"fixture-marker.txt"},
-			NetworkHosts:             []string{"sink.invalid"},
-			PersistenceTargets:       []string{"fixture-agent"},
-			CanaryNames:              []string{"fixture-token"},
 		},
 	},
 }
@@ -278,17 +258,14 @@ func ValidateMacOSDetonationResult(result MacOSDetonationResult, job MacOSDetona
 	if result.VM.Provider != job.ExpectedVM.Provider || result.VM.ImageID != job.ExpectedVM.ImageID {
 		return fmt.Errorf("macOS detonation result VM does not match job")
 	}
-	fixture := macOSDetonationFixtures[job.FixtureID]
 	for name, value := range map[string]string{
-		"vm.provider": result.VM.Provider,
-		"vm.image_id": result.VM.ImageID,
+		"vm.provider":    result.VM.Provider,
+		"vm.image_id":    result.VM.ImageID,
+		"vm.instance_id": result.VM.InstanceID,
 	} {
 		if err := validateMacOSDetonationIdentifier(name, value); err != nil {
 			return err
 		}
-	}
-	if !validMacOSDetonationFixtureInstanceID(fixture.Result, result.VM.InstanceID) {
-		return fmt.Errorf("invalid vm.instance_id")
 	}
 	if !result.FixtureOnly {
 		return fmt.Errorf("macOS detonation result must be fixture-only")
@@ -313,7 +290,7 @@ func ValidateMacOSDetonationResult(result MacOSDetonationResult, job MacOSDetona
 	if !result.DestroyedOrReverted {
 		return fmt.Errorf("VM must be destroyed or reverted")
 	}
-	return validateMacOSDetonationEvidence(result, fixture.Result)
+	return validateMacOSDetonationEvidence(result)
 }
 
 func validMacOSDetonationSafetyPolicy(policy MacOSDetonationSafetyPolicy) bool {
@@ -359,7 +336,7 @@ func validateMacOSDetonationIdentifier(name, value string) error {
 	return nil
 }
 
-func validateMacOSDetonationEvidence(result MacOSDetonationResult, fixture macOSDetonationFixtureResult) error {
+func validateMacOSDetonationEvidence(result MacOSDetonationResult) error {
 	counts := map[string]int{
 		"processes": len(result.Processes), "files": len(result.Files), "network": len(result.Network),
 		"persistence": len(result.Persistence), "canaries": len(result.Canaries), "findings": len(result.Findings),
@@ -370,17 +347,17 @@ func validateMacOSDetonationEvidence(result MacOSDetonationResult, fixture macOS
 		}
 	}
 	for _, item := range result.Processes {
-		if !macOSDetonationAllowedFixtureValue(item.Image, fixture.ProcessImages) || item.Behavior != MacOSDetonationBehaviorSpawnedFixtureHelper {
+		if !validMacOSDetonationToken(item.Image) || item.Behavior != MacOSDetonationBehaviorSpawnedFixtureHelper {
 			return fmt.Errorf("invalid process summary")
 		}
 	}
 	for _, item := range result.Files {
-		if item.Area != MacOSDetonationFileAreaSyntheticHome || !macOSDetonationAllowedFixtureValue(item.Name, fixture.FileNames) || item.Operation != MacOSDetonationFileOperationCreated {
+		if item.Area != MacOSDetonationFileAreaSyntheticHome || !validMacOSDetonationToken(item.Name) || item.Operation != MacOSDetonationFileOperationCreated {
 			return fmt.Errorf("invalid file summary")
 		}
 	}
 	for _, item := range result.Network {
-		if item.Protocol != MacOSDetonationNetworkProtocolTCP || !macOSDetonationAllowedFixtureValue(item.Host, fixture.NetworkHosts) || item.Outcome != MacOSDetonationNetworkOutcomeSinkholed {
+		if item.Protocol != MacOSDetonationNetworkProtocolTCP || !validMacOSDetonationHost(item.Host) || item.Outcome != MacOSDetonationNetworkOutcomeSinkholed {
 			return fmt.Errorf("invalid network summary")
 		}
 		if item.Port < 1 || item.Port > 65535 {
@@ -388,12 +365,12 @@ func validateMacOSDetonationEvidence(result MacOSDetonationResult, fixture macOS
 		}
 	}
 	for _, item := range result.Persistence {
-		if item.Mechanism != MacOSDetonationPersistenceLaunchAgent || !macOSDetonationAllowedFixtureValue(item.Target, fixture.PersistenceTargets) || item.Outcome != MacOSDetonationPersistenceOutcomeObserved {
+		if item.Mechanism != MacOSDetonationPersistenceLaunchAgent || !validMacOSDetonationToken(item.Target) || item.Outcome != MacOSDetonationPersistenceOutcomeObserved {
 			return fmt.Errorf("invalid persistence summary")
 		}
 	}
 	for _, item := range result.Canaries {
-		if !macOSDetonationAllowedFixtureValue(item.Name, fixture.CanaryNames) || item.Outcome != MacOSDetonationCanaryOutcomeRead {
+		if !validMacOSDetonationToken(item.Name) || item.Outcome != MacOSDetonationCanaryOutcomeRead {
 			return fmt.Errorf("invalid canary summary")
 		}
 	}
@@ -403,31 +380,6 @@ func validateMacOSDetonationEvidence(result MacOSDetonationResult, fixture macOS
 		}
 	}
 	return nil
-}
-
-func macOSDetonationAllowedFixtureValue(value string, allowed []string) bool {
-	for _, item := range allowed {
-		if value == item {
-			return true
-		}
-	}
-	return false
-}
-
-func validMacOSDetonationFixtureInstanceID(fixture macOSDetonationFixtureResult, value string) bool {
-	if !validMacOSDetonationToken(value) || !strings.HasPrefix(value, fixture.VMInstanceIDPrefix) {
-		return false
-	}
-	suffix := strings.TrimPrefix(value, fixture.VMInstanceIDPrefix)
-	if len(suffix) != fixture.VMInstanceIDSuffixDigits {
-		return false
-	}
-	for _, char := range suffix {
-		if char < '0' || char > '9' {
-			return false
-		}
-	}
-	return true
 }
 
 func validMacOSDetonationToken(value string) bool {

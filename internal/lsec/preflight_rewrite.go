@@ -11,7 +11,7 @@ func rewriteCommandForSelectedVersion(command []string, report RunReport) []stri
 	}
 	if report.Analysis.Manager == "npm" && report.Analysis.Action == "init" {
 		if rewritten, ok := rewriteNPMInitCommand(command, report); ok {
-			return appendNPMOfflinePromotionFlags(rewritten, report)
+			return rewritten
 		}
 	}
 	if report.Analysis.RequirementsFile {
@@ -64,10 +64,6 @@ func rewriteCommandForSelectedVersion(command []string, report RunReport) []stri
 	}
 	if report.Analysis.Manager == "npm" && report.Analysis.Action == "install" {
 		out = appendIfMissing(out, "--ignore-scripts")
-		out = appendNPMOfflinePromotionFlags(out, report)
-	}
-	if (report.Analysis.Manager == "npm" && (report.Analysis.Action == "exec" || report.Analysis.Action == "init")) || report.Analysis.Manager == "npx" {
-		out = appendNPMOfflinePromotionFlags(out, report)
 	}
 	if (report.Analysis.Manager == "pip" || report.Analysis.Manager == "pip3") && report.Analysis.Action == "install" {
 		if dir, ok := pipWheelhouseDir(report); ok && len(report.Artifacts) > 1 {
@@ -170,69 +166,18 @@ func stagedInstallSpecs(report RunReport) ([]string, bool) {
 		return nil, false
 	}
 	switch report.Analysis.Manager {
-	case "npm", "npx":
-		if artifact, ok := stagedNPMInstallArtifact(report.Analysis, report.Version, report.Artifacts); ok {
-			return []string{artifact.Path}, true
+	case "npm":
+		artifact, ok := stagedNPMInstallArtifact(report.Analysis, report.Version, report.Artifacts)
+		if !ok {
+			return nil, false
 		}
-		if canPromoteNPMStagedInstall(report.Analysis, report.Version, report.Artifacts) {
-			name := report.Analysis.PackageSpecs[0].Name
-			return []string{name + "@" + report.Version.Selected.Version}, true
-		}
-		return nil, false
+		return []string{artifact.Path}, true
 	case "pip", "pip3":
 		if len(report.Artifacts) == 1 && report.Artifacts[0].Kind == "wheel" {
 			return []string{report.Artifacts[0].Path}, true
 		}
 	}
 	return nil, false
-}
-
-func appendNPMOfflinePromotionFlags(out []string, report RunReport) []string {
-	if !canPromoteNPMStagedInstall(report.Analysis, report.Version, report.Artifacts) {
-		return out
-	}
-	tarballs := npmStagedTarballs(report.Artifacts)
-	if len(tarballs) == 0 {
-		return out
-	}
-	// Single install root can use the tarball path directly; multi/one-shot use offline cache.
-	if report.Analysis.Manager == "npm" && report.Analysis.Action == "install" && len(tarballs) == 1 {
-		return out
-	}
-	cache, ok := npmOfflineCacheDir(report.Artifacts)
-	if !ok {
-		return out
-	}
-	// Always force the seeded staging cache. Operator --cache must not override exact-byte promotion.
-	out = stripNPMCacheFlags(out)
-	out = appendIfMissing(out, "--prefer-offline")
-	out = appendIfMissing(out, "--offline")
-	insert := len(out)
-	for i, arg := range out {
-		if arg == "--ignore-scripts" || arg == "--yes" || arg == "-y" {
-			insert = i + 1
-			break
-		}
-	}
-	return append(out[:insert], append([]string{"--cache", cache}, out[insert:]...)...)
-}
-
-func stripNPMCacheFlags(args []string) []string {
-	out := make([]string, 0, len(args))
-	for i := 0; i < len(args); i++ {
-		arg := args[i]
-		if arg == "--cache" {
-			if i+1 < len(args) {
-				i++
-			}
-			continue
-		}
-		if strings.HasPrefix(arg, "--cache=") {
-			continue
-		}
-		out = append(out, arg)
-	}
-	return out
 }
 
 func pipWheelhouseDir(report RunReport) (string, bool) {

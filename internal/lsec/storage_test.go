@@ -220,7 +220,7 @@ func TestLoadStatusEventSnapshotAggregatesEventsAndScansTogether(t *testing.T) {
 		}
 	}
 
-	snapshot, err := store.loadStatusEventSnapshot(nil)
+	snapshot, err := store.loadStatusEventSnapshot()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -229,59 +229,6 @@ func TestLoadStatusEventSnapshotAggregatesEventsAndScansTogether(t *testing.T) {
 	}
 	if snapshot.scans.Runs != 1 || snapshot.scans.PartialRuns != 1 || snapshot.scans.Findings != 5 || snapshot.scans.Diagnostics != 2 {
 		t.Fatalf("scan counts = %#v, want latest scan summary from the same snapshot", snapshot.scans)
-	}
-}
-
-func TestLoadStatusPackageCountUsesSameEventSnapshot(t *testing.T) {
-	store := NewStore(pathsFromRoot(t.TempDir()))
-	if err := store.Init(); err != nil {
-		t.Fatal(err)
-	}
-	approvedHash := "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
-	if err := store.AddApproval(Approval{Ecosystem: "npm", Name: "stable", Version: "1.0.0", Hash: approvedHash, Reason: "reviewed"}); err != nil {
-		t.Fatal(err)
-	}
-	if err := store.AppendEvent("preflight", RunReport{
-		RunID:    "preflight-run-1",
-		Decision: Decision{Verdict: VerdictPrompt, Lane: LaneRisky},
-		Artifacts: []Artifact{{
-			Ecosystem: "npm",
-			Name:      "stable",
-			Version:   "1.0.0",
-			SHA256:    approvedHash,
-			Kind:      "tar",
-		}},
-	}); err != nil {
-		t.Fatal(err)
-	}
-	if err := store.AppendEvent("scan", ScanSummary{
-		Type:         "scan_summary",
-		RunID:        "scan-run-1",
-		Status:       "complete",
-		FindingCount: 1,
-	}); err != nil {
-		t.Fatal(err)
-	}
-
-	status, err := store.loadStatus(func() {
-		if err := store.AppendEvent("preflight", RunReport{
-			RunID: "preflight-run-later",
-			Artifacts: []Artifact{{
-				Ecosystem: "npm",
-				Name:      "later",
-				Version:   "2.0.0",
-				SHA256:    "abcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcd",
-				Kind:      "tar",
-			}},
-		}); err != nil {
-			t.Fatal(err)
-		}
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if status.Runs != 2 || status.ScanRuns != 1 || status.Packages != 1 || status.Approvals != 1 || status.ApprovedPackages != 1 {
-		t.Fatalf("status = %#v, want package and approval counts from the original event snapshot", status)
 	}
 }
 
@@ -530,7 +477,7 @@ func TestAppendEventPersistsRunEvidenceToSQLite(t *testing.T) {
 	}
 }
 
-func TestStoreInitCreatesOnlyActiveMirrorTables(t *testing.T) {
+func TestStoreInitCreatesPhase25ScanTables(t *testing.T) {
 	root := t.TempDir()
 	bin := t.TempDir()
 	logPath := filepath.Join(root, "sqlite.log")
@@ -547,25 +494,19 @@ func TestStoreInitCreatesOnlyActiveMirrorTables(t *testing.T) {
 	}
 	log := string(body)
 	for _, want := range []string{
-		"CREATE TABLE IF NOT EXISTS package_versions",
-		"CREATE TABLE IF NOT EXISTS artifacts",
-		"CREATE TABLE IF NOT EXISTS advisory_checks",
-		"CREATE TABLE IF NOT EXISTS static_findings",
-		"CREATE TABLE IF NOT EXISTS resolution_decisions",
-		"CREATE TABLE IF NOT EXISTS approvals",
-		"CREATE TABLE IF NOT EXISTS events",
+		"CREATE TABLE IF NOT EXISTS scan_runs",
+		"CREATE TABLE IF NOT EXISTS scan_roots",
+		"CREATE TABLE IF NOT EXISTS component_observations",
+		"CREATE TABLE IF NOT EXISTS scan_findings",
+		"CREATE TABLE IF NOT EXISTS finding_evidence",
+		"CREATE TABLE IF NOT EXISTS catalog_snapshots",
+		"CREATE TABLE IF NOT EXISTS provider_snapshots",
+		"CREATE TABLE IF NOT EXISTS remediation_candidates",
+		"CREATE TABLE IF NOT EXISTS finding_state",
+		"CREATE TABLE IF NOT EXISTS scan_diagnostics",
 	} {
 		if !strings.Contains(log, want) {
 			t.Fatalf("sqlite init log missing %q:\n%s", want, log)
-		}
-	}
-	for _, unexpected := range []string{
-		"sandbox_runs", "canary_events", "llm_reviews", "skillpack_versions", "model_eval_cases",
-		"scan_runs", "scan_roots", "component_observations", "scan_findings", "finding_evidence",
-		"catalog_snapshots", "provider_snapshots", "remediation_candidates", "finding_state", "scan_diagnostics",
-	} {
-		if strings.Contains(log, "CREATE TABLE IF NOT EXISTS "+unexpected) {
-			t.Fatalf("sqlite init log unexpectedly creates %q:\n%s", unexpected, log)
 		}
 	}
 }

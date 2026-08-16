@@ -101,22 +101,15 @@ func TestPipAuditReceivesOnlySafeRequirementsFiles(t *testing.T) {
 	}
 	got := string(args)
 	gotArgs := strings.Fields(got)
-	if len(gotArgs) != 12 {
-		t.Fatalf("pip-audit args = %#v, want two invocations", gotArgs)
+	wantArgs := []string{
+		"--format", "json", "--progress-spinner", "off", "--requirement", filepath.Join(project, "nested", "requirements.txt"),
+		"--format", "json", "--progress-spinner", "off", "--requirement", safe,
 	}
-	for i := 0; i < len(gotArgs); i += 6 {
-		wantPrefix := []string{"--format", "json", "--progress-spinner", "off", "--requirement"}
-		if strings.Join(gotArgs[i:i+5], "\n") != strings.Join(wantPrefix, "\n") {
-			t.Fatalf("pip-audit args = %#v, want copied requirement invocations", gotArgs)
-		}
-		if !strings.Contains(gotArgs[i+5], "lsec-scan-provider-") || gotArgs[i+5] == safe || !filepath.IsAbs(gotArgs[i+5]) {
-			t.Fatalf("pip-audit requirement arg = %q, want private provider copy", gotArgs[i+5])
-		}
+	if strings.Join(gotArgs, "\n") != strings.Join(wantArgs, "\n") {
+		t.Fatalf("pip-audit args = %#v, want %#v", gotArgs, wantArgs)
 	}
 	for _, unwanted := range []string{
 		project,
-		safe,
-		filepath.Join(project, "nested", "requirements.txt"),
 		filepath.Join(project, "unsafe", "requirements.txt"),
 		filepath.Join(project, "src", "app.py"),
 		filepath.Join(project, ".venv", "requirements.txt"),
@@ -469,19 +462,10 @@ func TestPipAuditKeepsEarlierFindingsAndCountsFailedInput(t *testing.T) {
 	writeFile(t, filepath.Join(project, "a", "requirements.txt"), safeRequirementLine)
 	writeFile(t, filepath.Join(project, "z", "requirements.txt"), safeRequirementLine)
 	writeFakeTool(t, root, "pip-audit", `#!/bin/sh
-count_file=`+shellQuote(filepath.Join(root, "pip-count"))+`
-count=0
-if [ -f "$count_file" ]; then
-  IFS= read -r count < "$count_file"
-fi
-count=$((count + 1))
-printf '%s' "$count" > "$count_file"
-if [ "$count" -eq 1 ]; then
-  echo '{"dependencies":[{"name":"requests","version":"2.32.5","vulns":[{"id":"PYSEC-retained"}]}]}'
-else
-  echo 'secret provider output from /private/project/requirements.txt' >&2
-  exit 2
-fi
+case "$6" in
+  */a/*) echo '{"dependencies":[{"name":"requests","version":"2.32.5","vulns":[{"id":"PYSEC-retained"}]}]}' ;;
+  *) echo 'secret provider output from /private/project/requirements.txt' >&2; exit 2 ;;
+esac
 `)
 	t.Setenv("PATH", root)
 
@@ -498,39 +482,6 @@ fi
 	}
 	if snapshot.Error != "execution_failed" || strings.Contains(snapshot.Error, "secret") || strings.Contains(snapshot.Error, project) {
 		t.Fatalf("snapshot error = %q, want redacted category", snapshot.Error)
-	}
-}
-
-func TestPipAuditReadsCopiedRequirementAfterOriginalChanges(t *testing.T) {
-	root := t.TempDir()
-	project := filepath.Join(root, "project")
-	requirements := filepath.Join(project, "requirements.txt")
-	seenArg := filepath.Join(root, "seen-arg")
-	seenContent := filepath.Join(root, "seen-content")
-	writeFile(t, requirements, safeRequirementLine)
-	writeFakeTool(t, root, "pip-audit", `#!/bin/sh
-req="$6"
-printf '%s' "$req" > `+shellQuote(seenArg)+`
-printf 'evil-injected-package==9.9.9\n' > `+shellQuote(requirements)+`
-/bin/cat "$req" > `+shellQuote(seenContent)+`
-echo '{"dependencies":[{"name":"requests","version":"2.32.5","vulns":[{"id":"PYSEC-copy"}]}]}'
-`)
-	t.Setenv("PATH", root)
-
-	findings, diagnostics, snapshot := runPipAuditProvider(t.Context(), "run", []string{project})
-
-	if len(diagnostics) != 0 || snapshot.Status != "ok" {
-		t.Fatalf("diagnostics = %#v snapshot = %#v, want successful copied read", diagnostics, snapshot)
-	}
-	if len(findings) != 1 || findings[0].ProviderRecordID != "PYSEC-copy" || findings[0].SourcePath != requirements {
-		t.Fatalf("findings = %#v, want finding mapped to original requirements path", findings)
-	}
-	arg := readTextFile(t, seenArg)
-	if arg == requirements || !strings.Contains(arg, "lsec-scan-provider-") {
-		t.Fatalf("pip-audit arg = %q, want provider temp copy", arg)
-	}
-	if got := readTextFile(t, seenContent); got != safeRequirementLine {
-		t.Fatalf("copied requirements content = %q, want original safe content", got)
 	}
 }
 

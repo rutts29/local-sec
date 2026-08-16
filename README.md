@@ -12,7 +12,7 @@ The project is maintained as a single Go binary with no third-party Go module de
   - `uv`, `uvx`, `pipx`
   - `curl`, `wget`
 - Mature-version selection so `latest` does not automatically mean safest.
-- Artifact staging for supported npm, pip, and downloader paths in `~/.local-sec/staging/<run-id>/`; project lockfile installs use an audited rewrite without artifact staging, while one-shot paths can defer staging for review or be blocked.
+- Staging into `~/.local-sec/staging/<run-id>/` before the real install.
 - Static artifact scanning for credential access, network behavior, obfuscation, persistence, Python startup hooks, npm lifecycle scripts, and agent/editor config paths.
 - Advisory refresh through OSV, with optional Socket and Snyk enrichment when those CLIs are already installed.
 - Exact package/version/hash approvals.
@@ -38,9 +38,7 @@ lsec doctor
 lsec status
 ```
 
-`lsec install-shims` writes shims and prints the directory that must be added before package-manager directories in your `PATH`; make that shell change yourself, reload the shell, then run `lsec doctor`. `lsec sandbox run --mode docker-fixture` is a harmless fixture-only command, not a package detonation workflow; its optional preflight attachment runs a harmless command rather than the package.
-
-See [docs/technical-overview.md](docs/technical-overview.md) for the full command list, scanner details, verdict policy, and release notes. Read the [threat model and limitations](docs/threat-model-and-limitations.md) before relying on a verdict, and use [SECURITY.md](SECURITY.md) to report vulnerabilities.
+See [docs/technical-overview.md](docs/technical-overview.md) for the full command list, scanner details, verdict policy, and release notes.
 
 ## Scanner
 

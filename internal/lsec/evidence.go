@@ -93,7 +93,6 @@ func sanitizeRunReportForPersistence(report RunReport) RunReport {
 		Decision: report.Decision, Sandbox: report.Sandbox,
 	})
 	report.Analysis = bundle.Analysis
-	report.Version = bundle.Version
 	report.Artifacts = bundle.Artifacts
 	report.Findings = bundle.Findings
 	report.Advisories = bundle.Advisories
@@ -108,52 +107,12 @@ func sanitizeEvidenceBundleForPersistence(bundle EvidenceBundle) EvidenceBundle 
 
 func redactEvidenceBundle(bundle EvidenceBundle) EvidenceBundle {
 	bundle.Analysis = redactEvidenceAnalysis(bundle.Analysis)
-	bundle.Version = redactEvidenceVersion(bundle.Version)
 	bundle.Artifacts = redactEvidenceArtifacts(bundle.Artifacts)
 	bundle.Findings = redactEvidenceFindings(bundle.Findings)
 	bundle.Advisories = redactEvidenceAdvisories(bundle.Advisories)
 	bundle.Decision = redactEvidenceDecision(bundle.Decision)
 	bundle.Sandbox = redactSandboxEvidence(bundle.Sandbox)
 	return bundle
-}
-
-func redactEvidenceVersion(version VersionInfo) VersionInfo {
-	version.Requested = redactEvidenceValue(version.Requested)
-	version.Selected = redactEvidenceRegistryVersion(version.Selected)
-	version.Latest = redactEvidenceRegistryVersion(version.Latest)
-	version.Candidates = redactEvidenceRegistryVersions(version.Candidates)
-	version.Skipped = redactEvidenceVersionSkips(version.Skipped)
-	version.Maintainers = redactEvidencePathList(version.Maintainers)
-	return version
-}
-
-func redactEvidenceRegistryVersion(version RegistryVersion) RegistryVersion {
-	version.Version = redactEvidenceValue(version.Version)
-	return version
-}
-
-func redactEvidenceRegistryVersions(versions []RegistryVersion) []RegistryVersion {
-	if len(versions) == 0 {
-		return versions
-	}
-	redacted := append([]RegistryVersion(nil), versions...)
-	for i := range redacted {
-		redacted[i] = redactEvidenceRegistryVersion(redacted[i])
-	}
-	return redacted
-}
-
-func redactEvidenceVersionSkips(skips []VersionSkip) []VersionSkip {
-	if len(skips) == 0 {
-		return skips
-	}
-	redacted := append([]VersionSkip(nil), skips...)
-	for i := range redacted {
-		redacted[i].Version = redactEvidenceValue(redacted[i].Version)
-		redacted[i].Reason = redactEvidenceText(redacted[i].Reason)
-		redacted[i].AdvisoryIDs = redactEvidencePathList(redacted[i].AdvisoryIDs)
-	}
-	return redacted
 }
 
 func redactEvidenceAnalysis(analysis CommandAnalysis) CommandAnalysis {
@@ -405,7 +364,6 @@ var (
 	urlPattern              = regexp.MustCompile(`(?i)\b[a-z][a-z0-9+.-]*://[^\s"'<>]+`)
 	windowsUserPathPattern  = regexp.MustCompile(`(?i)[A-Z]:[\\/]+Users[\\/]+[^\s"'<>]+`)
 	splitSecretArgPattern   = regexp.MustCompile(`(?i)^-{1,2}(?:[a-z0-9_-]*(?:token|secret|password|passwd)|api[-_]?key|auth[-_]?token)$`)
-	splitSecretTextPattern  = regexp.MustCompile(`(?i)(-{1,2}(?:[a-z0-9_-]*(?:token|secret|password|passwd)|api[-_]?key|auth[-_]?token)\s+)[^\s"'<>]+`)
 	tokenLikePattern        = regexp.MustCompile(`\b(?:gh[pousr]_[A-Za-z0-9_]{20,}|github_pat_[A-Za-z0-9_]{20,}|sk-[A-Za-z0-9_-]{16,}|xox[baprs]-[A-Za-z0-9-]{16,})\b`)
 	canarySecretPattern     = regexp.MustCompile(`\blsec-canary-[A-Za-z0-9-]+\b`)
 	keyedSecretPattern      = regexp.MustCompile(`(?i)\b((?:[A-Z0-9_]*TOKEN|API[_-]?KEY|SECRET|PASSWORD|PASSWD|AUTH[_-]?TOKEN)\s*[=:]\s*)[^\s"'<>]+`)
@@ -477,7 +435,6 @@ func redactUnixPathsInSegment(value string) string {
 }
 
 func redactEvidenceSecrets(value string) string {
-	value = splitSecretTextPattern.ReplaceAllString(value, "${1}[redacted-secret]")
 	value = tokenLikePattern.ReplaceAllString(value, "[redacted-secret]")
 	value = canarySecretPattern.ReplaceAllString(value, "[redacted-secret]")
 	return keyedSecretPattern.ReplaceAllString(value, "${1}[redacted-secret]")

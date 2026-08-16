@@ -3,182 +3,324 @@ package lsec
 import (
 	"bytes"
 	"encoding/json"
-	"net/http"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 )
 
-func TestPlanNotificationIsRedactedAndDeterministic(t *testing.T) {
+func TestNotifyPlanStdoutJSONRedactsRunSecrets(t *testing.T) {
 	root := t.TempDir()
-	paths := pathsFromRoot(root)
-	store := NewStore(paths)
-	if err := store.Init(); err != nil {
-		t.Fatal(err)
-	}
-	report := RunReport{
-		RunID: "run-notify-1",
-		Analysis: CommandAnalysis{
-			Manager: "npm",
-			Action:  "install",
-			Raw:     []string{"npm", "install", "left-pad@1.3.0"},
-			PackageSpecs: []PackageSpec{{
-				Raw: "left-pad@1.3.0", Name: "left-pad", Version: "1.3.0",
-			}},
-			RiskFlags: []RiskFlag{{Code: "one_shot_exec", Severity: "prompt", Message: "review"}},
-		},
-		Version: VersionInfo{Found: true, Selected: RegistryVersion{Version: "1.3.0"}},
-		Artifacts: []Artifact{{
-			Path: filepath.Join(root, "secret-project", "left-pad.tgz"), Ecosystem: "npm", Name: "left-pad", Version: "1.3.0", SHA256: strings.Repeat("ab", 32), Kind: "tar",
-		}},
-		Findings:  []Finding{{Code: "first_seen_package", Severity: "prompt", Message: "new package", File: filepath.Join(root, "secret-project", "pkg")}},
-		Decision:  Decision{Verdict: VerdictPrompt, Lane: LaneRisky, Reasons: []string{"package has not been seen"}},
-		CreatedAt: time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC),
-	}
-	if err := store.AppendEvent("preflight", report); err != nil {
-		t.Fatal(err)
-	}
+	t.Setenv("LSEC_HOME", root)
+	report := rawSecretRunReport()
+	report.RunID = "run-notify-1"
+	seedRawRunEvent(t, pathsFromRoot(root), report)
 
-	payload, err := PlanNotification(store, report.RunID, time.Date(2026, 7, 12, 0, 0, 0, 0, time.UTC))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if payload.NotificationID == "" || payload.RunID != report.RunID || !payload.Redacted {
-		t.Fatalf("payload = %#v", payload)
-	}
-	body, err := json.Marshal(payload)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, forbidden := range []string{"secret-project", root} {
-		if strings.Contains(string(body), forbidden) {
-			t.Fatalf("notification leaked %q: %s", forbidden, body)
-		}
-	}
-}
-
-func TestNotifyMarkSentTracksLocalBookkeeping(t *testing.T) {
-	root := t.TempDir()
-	store := NewStore(pathsFromRoot(root))
-	if err := store.Init(); err != nil {
-		t.Fatal(err)
-	}
-	report := RunReport{
-		RunID:     "run-notify-2",
-		Analysis:  CommandAnalysis{Manager: "npm", Action: "install", Raw: []string{"npm", "install", "x"}},
-		Decision:  Decision{Verdict: VerdictPrompt, Lane: LaneRisky, Reasons: []string{"review"}},
-		CreatedAt: time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC),
-	}
-	if err := store.AppendEvent("preflight", report); err != nil {
-		t.Fatal(err)
-	}
 	var stdout bytes.Buffer
-	if err := runNotifyCLI([]string{"plan", report.RunID}, &stdout, store); err != nil {
-		t.Fatal(err)
-	}
-	var planned NotificationPayload
-	if err := json.Unmarshal(stdout.Bytes(), &planned); err != nil {
-		t.Fatal(err)
-	}
-	stdout.Reset()
-	if err := runNotifyCLI([]string{"mark-sent", planned.NotificationID}, &stdout, store); err != nil {
-		t.Fatal(err)
-	}
-	unsent, err := store.LoadUnsentNotifications(20)
+	err := Run([]string{"notify", "plan", "run-notify-1"}, strings.NewReader(""), &stdout, &bytes.Buffer{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, item := range unsent {
-		if item.NotificationID == planned.NotificationID {
-			t.Fatalf("notification still unsent after mark-sent: %#v", unsent)
-		}
-	}
-}
 
-func TestValidateDiscordWebhookURL(t *testing.T) {
-	tests := map[string]bool{
-		"https://discord.com/api/webhooks/123/abc":    true,
-		"https://discordapp.com/api/webhooks/123/abc": true,
-		"http://discord.com/api/webhooks/123/abc":     false,
-		"https://evil.example/api/webhooks/123/abc":   false,
-		"https://discord.com/not-webhooks/123/abc":    false,
+	body := stdout.String()
+	assertNoNotificationSecrets(t, body)
+	var payload NotificationPayload
+	if err := json.Unmarshal(stdout.Bytes(), &payload); err != nil {
+		t.Fatalf("stdout is not notification JSON: %q err=%v", body, err)
 	}
-	for raw, wantOK := range tests {
-		err := validateDiscordWebhookURL(raw)
-		if wantOK && err != nil {
-			t.Fatalf("validateDiscordWebhookURL(%q) = %v, want nil", raw, err)
-		}
-		if !wantOK && err == nil {
-			t.Fatalf("validateDiscordWebhookURL(%q) = nil, want error", raw)
-		}
+	if payload.Schema != notificationSchema || payload.Version != 1 || !payload.Redacted {
+		t.Fatalf("payload metadata = %#v, want schema/version/redacted", payload)
 	}
-}
+	if payload.NotificationID == "" || payload.RunID != "run-notify-1" || payload.EvidenceSHA256 == "" {
+		t.Fatalf("payload ids = %#v, want notification/run/evidence ids", payload)
+	}
+	if payload.Command.Manager != "npm" || payload.Command.Action != "install" {
+		t.Fatalf("command summary = %#v, want npm install", payload.Command)
+	}
+	if len(payload.Artifacts) != 1 || payload.Artifacts[0].Name != "pkg" || payload.Artifacts[0].Hash == "" {
+		t.Fatalf("artifacts = %#v, want package identity only", payload.Artifacts)
+	}
 
-func TestDiscordWebhookBodyIsRedactedSummary(t *testing.T) {
-	payload := NotificationPayload{
-		Schema:         notificationSchema,
-		Version:        1,
-		NotificationID: "note-1",
-		RunID:          "run-1",
-		EvidenceSHA256: strings.Repeat("ab", 32),
-		Verdict:        VerdictPrompt,
-		Lane:           LaneRisky,
-		Command:        NotificationCommand{Manager: "npm", Action: "install"},
-		Risk:           NotificationRisk{Reasons: []string{"fresh package"}},
-		CreatedAt:      time.Date(2026, 7, 12, 0, 0, 0, 0, time.UTC),
-		Redacted:       true,
-	}
-	body, err := discordWebhookBody(payload)
+	eventsBody, err := os.ReadFile(pathsFromRoot(root).Events)
 	if err != nil {
 		t.Fatal(err)
 	}
-	var doc map[string]string
-	if err := json.Unmarshal(body, &doc); err != nil {
+	if !strings.Contains(string(eventsBody), `"kind":"notification_planned"`) {
+		t.Fatalf("events = %s, want notification_planned event", eventsBody)
+	}
+	assertNoNotificationSecrets(t, notificationEventRow(t, string(eventsBody), "notification_planned"))
+}
+
+func TestNotifyPlanRedactsLocalPackageSpecs(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("LSEC_HOME", root)
+	report := rawSecretRunReport()
+	report.RunID = "run-notify-local-specs"
+	report.Analysis.PackageSpecs = []PackageSpec{
+		{Raw: "../secret-project", Name: "../secret-project", LocalPath: true},
+		{Raw: "./pkg", Name: "./pkg", LocalPath: true},
+		{Raw: "file:../pkg", Name: "file:../pkg", LocalPath: true},
+		{Raw: "workspace:../pkg", Name: "workspace:../pkg", Version: "workspace:../pkg", LocalPath: true},
+		{Raw: "dist/pkg.whl", Name: "dist/pkg.whl"},
+		{Raw: "packages/pkg.tgz", Name: "packages/pkg.tgz"},
+		{Raw: "vendor/pkg.tar.gz", Name: "vendor/pkg.tar.gz"},
+		{Raw: "@scope/pkg@1.2.3", Name: "@scope/pkg", Version: "1.2.3"},
+	}
+	seedRawRunEvent(t, pathsFromRoot(root), report)
+
+	var stdout bytes.Buffer
+	if err := Run([]string{"notify", "plan", "run-notify-local-specs"}, strings.NewReader(""), &stdout, &bytes.Buffer{}); err != nil {
 		t.Fatal(err)
 	}
-	content := doc["content"]
-	for _, want := range []string{"run-1", "prompt", "note-1", "npm"} {
-		if !strings.Contains(content, want) {
-			t.Fatalf("content = %q, want %q", content, want)
+	body := stdout.String()
+	for _, forbidden := range []string{"../secret-project", "./pkg", "file:../pkg", "workspace:../pkg", "dist/pkg.whl", "packages/pkg.tgz", "vendor/pkg.tar.gz"} {
+		if strings.Contains(body, forbidden) {
+			t.Fatalf("notification contains unredacted local package spec %q: %s", forbidden, body)
 		}
 	}
-	for _, forbidden := range []string{"/Users/", "token=", "password"} {
-		if strings.Contains(content, forbidden) {
-			t.Fatalf("content leaked %q: %q", forbidden, content)
+	if !strings.Contains(body, "@scope/pkg") {
+		t.Fatalf("notification JSON = %s, want scoped npm package name preserved", body)
+	}
+	if !strings.Contains(body, "[redacted-local-package-spec]") {
+		t.Fatalf("notification JSON = %s, want local package spec redaction marker", body)
+	}
+}
+
+func TestNotifyPlanOutWritesPrivateFileAndRejectsUnsafePaths(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("LSEC_HOME", root)
+	report := rawSecretRunReport()
+	report.RunID = "run-notify-1"
+	seedRawRunEvent(t, pathsFromRoot(root), report)
+
+	out := filepath.Join(t.TempDir(), "private", "notification.json")
+	var stdout bytes.Buffer
+	if err := Run([]string{"notify", "plan", "run-notify-1", "--out", out}, strings.NewReader(""), &stdout, &bytes.Buffer{}); err != nil {
+		t.Fatal(err)
+	}
+	if stdout.Len() != 0 {
+		t.Fatalf("stdout = %q, want empty with --out", stdout.String())
+	}
+	info, err := os.Stat(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := info.Mode().Perm(); got != 0o600 {
+		t.Fatalf("file mode = %o, want 0600", got)
+	}
+	body, err := os.ReadFile(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertNoNotificationSecrets(t, string(body))
+
+	for _, unsafe := range []string{"notification.json", filepath.Join("..", "notification.json"), filepath.Join(string(filepath.Separator), "tmp", "notification.json")} {
+		err := Run([]string{"notify", "plan", "run-notify-1", "--out", unsafe}, strings.NewReader(""), &bytes.Buffer{}, &bytes.Buffer{})
+		if err == nil {
+			t.Fatalf("unsafe path %q succeeded", unsafe)
 		}
 	}
 }
 
-func TestNotifySendDiscordRequiresWebhook(t *testing.T) {
+func TestNotifyListShowsPlannedUnsentNewestFirstAndHidesSent(t *testing.T) {
 	store := NewStore(pathsFromRoot(t.TempDir()))
 	if err := store.Init(); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("LSEC_DISCORD_WEBHOOK_URL", "")
-	err := runNotifyCLI([]string{"send-discord", "missing"}, &bytes.Buffer{}, store)
-	if err == nil {
-		t.Fatal("expected error without webhook env")
+	first := NotificationPayload{Schema: notificationSchema, Version: 1, NotificationID: "notif-old", RunID: "run-old", Redacted: true}
+	second := NotificationPayload{Schema: notificationSchema, Version: 1, NotificationID: "notif-new", RunID: "run-new", Redacted: true}
+	if err := store.AppendEvent("notification_planned", first); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.AppendEvent("notification_planned", second); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.AppendEvent("notification_sent", NotificationSentEvent{NotificationID: "notif-old", RunID: "run-old", Redacted: true}); err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout bytes.Buffer
+	if err := runNotifyCLI([]string{"list"}, &stdout, store); err != nil {
+		t.Fatal(err)
+	}
+	output := stdout.String()
+	if !strings.Contains(output, "notif-new") || strings.Contains(output, "notif-old") {
+		t.Fatalf("list output = %q, want only unsent newest notification", output)
 	}
 }
 
-func TestDiscordHTTPClientRejectsNonDiscordRedirect(t *testing.T) {
-	client := discordHTTPClient()
-	if client.Timeout != discordWebhookTimeout {
-		t.Fatalf("timeout = %v, want %v", client.Timeout, discordWebhookTimeout)
+func TestNotifyListDedupesRepeatedPlanRowsNewestFirst(t *testing.T) {
+	store := NewStore(pathsFromRoot(t.TempDir()))
+	if err := store.Init(); err != nil {
+		t.Fatal(err)
 	}
-	req, err := http.NewRequest(http.MethodGet, "https://evil.example/hook", nil)
+	first := NotificationPayload{Schema: notificationSchema, Version: 1, NotificationID: "notif-same", RunID: "run-same", CreatedAt: time.Date(2026, 7, 2, 1, 0, 0, 0, time.UTC), Redacted: true}
+	second := NotificationPayload{Schema: notificationSchema, Version: 1, NotificationID: "notif-other", RunID: "run-other", CreatedAt: time.Date(2026, 7, 2, 2, 0, 0, 0, time.UTC), Redacted: true}
+	third := NotificationPayload{Schema: notificationSchema, Version: 1, NotificationID: "notif-same", RunID: "run-same", CreatedAt: time.Date(2026, 7, 2, 3, 0, 0, 0, time.UTC), Redacted: true}
+	for _, payload := range []NotificationPayload{first, second, third} {
+		if err := store.AppendEvent("notification_planned", payload); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	var stdout bytes.Buffer
+	if err := runNotifyCLI([]string{"list"}, &stdout, store); err != nil {
+		t.Fatal(err)
+	}
+	output := stdout.String()
+	if strings.Count(output, "notif-same") != 1 {
+		t.Fatalf("list output = %q, want duplicate notification id once", output)
+	}
+	if strings.Index(output, "notif-same") > strings.Index(output, "notif-other") {
+		t.Fatalf("list output = %q, want newest duplicate before older notification", output)
+	}
+}
+
+func TestNotifyListRejectsTrailingLimitText(t *testing.T) {
+	store := NewStore(pathsFromRoot(t.TempDir()))
+	if err := store.Init(); err != nil {
+		t.Fatal(err)
+	}
+
+	err := runNotifyCLI([]string{"list", "10x"}, &bytes.Buffer{}, store)
+	if err == nil || !strings.Contains(err.Error(), "notify list limit must be a positive integer") {
+		t.Fatalf("err = %v, want positive integer limit error", err)
+	}
+}
+
+func TestNotifyMarkSentUnknownIDErrorsWithoutAppendingSentEvent(t *testing.T) {
+	store := NewStore(pathsFromRoot(t.TempDir()))
+	if err := store.Init(); err != nil {
+		t.Fatal(err)
+	}
+	planned := NotificationPayload{Schema: notificationSchema, Version: 1, NotificationID: "notif-known", RunID: "run-known", Redacted: true}
+	if err := store.AppendEvent("notification_planned", planned); err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout bytes.Buffer
+	err := runNotifyCLI([]string{"mark-sent", "notif-missing"}, &stdout, store)
+	if err == nil || !strings.Contains(err.Error(), "notification notif-missing not found") {
+		t.Fatalf("err = %v, want unknown notification error", err)
+	}
+	eventsBody, err := os.ReadFile(store.paths.Events)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := client.CheckRedirect(req, []*http.Request{req}); err == nil {
-		t.Fatal("expected non-discord redirect rejection")
+	if strings.Contains(string(eventsBody), `"kind":"notification_sent"`) {
+		t.Fatalf("events = %s, want no notification_sent row", eventsBody)
 	}
-	okReq, err := http.NewRequest(http.MethodGet, "https://discord.com/api/webhooks/1/abc", nil)
+}
+
+func TestNotifyMarkSentAppendsRunIDAndHidesFromList(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("LSEC_HOME", root)
+	planned := NotificationPayload{Schema: notificationSchema, Version: 1, NotificationID: "notif-123", RunID: "run-123", Redacted: true}
+	if err := appendNotificationTestEvent(pathsFromRoot(root), "notification_planned", planned); err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout bytes.Buffer
+	if err := Run([]string{"notify", "mark-sent", "notif-123"}, strings.NewReader(""), &stdout, &bytes.Buffer{}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(stdout.String(), "notif-123") {
+		t.Fatalf("stdout = %q, want notification id", stdout.String())
+	}
+	eventsBody, err := os.ReadFile(pathsFromRoot(root).Events)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := client.CheckRedirect(okReq, []*http.Request{okReq}); err != nil {
-		t.Fatalf("unexpected reject for valid discord hop: %v", err)
+	row := notificationEventRow(t, string(eventsBody), "notification_sent")
+	if !strings.Contains(row, `"notification_id":"notif-123"`) {
+		t.Fatalf("event row = %s, want notification id", row)
 	}
+	if !strings.Contains(row, `"run_id":"run-123"`) {
+		t.Fatalf("event row = %s, want planned run id", row)
+	}
+	stdout.Reset()
+	if err := Run([]string{"notify", "list"}, strings.NewReader(""), &stdout, &bytes.Buffer{}); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(stdout.String(), "notif-123") {
+		t.Fatalf("list output = %q, want sent notification hidden", stdout.String())
+	}
+}
+
+func TestNotifyPlanDoesNotInvokeSQLite(t *testing.T) {
+	root := t.TempDir()
+	bin := t.TempDir()
+	logPath := filepath.Join(root, "sqlite.log")
+	writeFakeTool(t, bin, "sqlite3", "#!/bin/sh\nprintf 'sqlite invoked\\n' >> "+shellQuote(logPath)+"\n")
+	t.Setenv("PATH", bin)
+	t.Setenv("LSEC_HOME", filepath.Join(root, ".lsec"))
+	report := rawSecretRunReport()
+	report.RunID = "run-notify-no-sqlite"
+	seedRawRunEvent(t, pathsFromRoot(filepath.Join(root, ".lsec")), report)
+
+	var stdout bytes.Buffer
+	if err := Run([]string{"notify", "plan", "run-notify-no-sqlite"}, strings.NewReader(""), &stdout, &bytes.Buffer{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(logPath); !os.IsNotExist(err) {
+		t.Fatalf("sqlite log stat err = %v, want sqlite3 not invoked", err)
+	}
+}
+
+func TestNotifyMarkSentDoesNotInvokeSQLite(t *testing.T) {
+	root := t.TempDir()
+	bin := t.TempDir()
+	logPath := filepath.Join(root, "sqlite.log")
+	writeFakeTool(t, bin, "sqlite3", "#!/bin/sh\nprintf 'sqlite invoked\\n' >> "+shellQuote(logPath)+"\n")
+	t.Setenv("PATH", bin)
+	t.Setenv("LSEC_HOME", filepath.Join(root, ".lsec"))
+	planned := NotificationPayload{Schema: notificationSchema, Version: 1, NotificationID: "notif-local-only", RunID: "run-local-only", Redacted: true}
+	if err := appendNotificationTestEvent(pathsFromRoot(filepath.Join(root, ".lsec")), "notification_planned", planned); err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout bytes.Buffer
+	if err := Run([]string{"notify", "mark-sent", "notif-local-only"}, strings.NewReader(""), &stdout, &bytes.Buffer{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(logPath); !os.IsNotExist(err) {
+		t.Fatalf("sqlite log stat err = %v, want sqlite3 not invoked", err)
+	}
+}
+
+func assertNoNotificationSecrets(t *testing.T, body string) {
+	t.Helper()
+	assertNoRemoteSandboxSecrets(t, body)
+	for _, forbidden := range []string{
+		"raw prompt",
+		"raw response",
+		`"path":`,
+		`"evidence":`,
+		`"fake_environment":`,
+		"OPENAI_API_KEY",
+	} {
+		if strings.Contains(body, forbidden) {
+			t.Fatalf("body contains forbidden value %q: %s", forbidden, body)
+		}
+	}
+}
+
+func notificationEventRow(t *testing.T, events, kind string) string {
+	t.Helper()
+	for _, line := range strings.Split(strings.TrimSpace(events), "\n") {
+		if strings.Contains(line, `"kind":"`+kind+`"`) {
+			return line
+		}
+	}
+	t.Fatalf("events = %s, want %s row", events, kind)
+	return ""
+}
+
+func appendNotificationTestEvent(paths Paths, kind string, payload any) error {
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+	return eventLog{path: paths.Events}.append(kind, body, time.Now().UTC())
 }

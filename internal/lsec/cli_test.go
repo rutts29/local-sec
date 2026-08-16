@@ -112,12 +112,12 @@ func TestRewriteNPMInstallDoesNotInstallMultipleStagedTarballsAsRoots(t *testing
 		},
 		Version: VersionInfo{Found: true, Selected: RegistryVersion{Version: "1.0.0"}},
 		Artifacts: []Artifact{
-			{Path: "/tmp/stage/example-1.0.0.tgz", Kind: "tar", Ecosystem: "npm", Name: "example", Version: "1.0.0"},
-			{Path: "/tmp/stage/dep-pkg-2.0.0.tgz", Kind: "tar", Ecosystem: "npm", Name: "dep-pkg", Version: "2.0.0"},
+			{Path: "/tmp/stage/example-1.0.0.tgz", Kind: "tar"},
+			{Path: "/tmp/stage/dep-pkg-2.0.0.tgz", Kind: "tar"},
 		},
 	})
 
-	want := []string{"npm", "install", "example@1.0.0", "--ignore-scripts", "--cache", "/tmp/stage/npm-offline-cache", "--prefer-offline", "--offline"}
+	want := []string{"npm", "install", "example@1.0.0", "--ignore-scripts"}
 	if len(got) != len(want) {
 		t.Fatalf("command = %#v, want %#v", got, want)
 	}
@@ -126,33 +126,8 @@ func TestRewriteNPMInstallDoesNotInstallMultipleStagedTarballsAsRoots(t *testing
 			t.Fatalf("command[%d] = %q, want %q in %#v", i, got[i], wantArg, got)
 		}
 	}
-	if stringSliceContains(got, "/tmp/stage/dep-pkg-2.0.0.tgz") || stringSliceContains(got, "/tmp/stage/example-1.0.0.tgz") {
+	if stringSliceContains(got, "/tmp/stage/dep-pkg-2.0.0.tgz") || stringSliceContains(got, "--offline") || stringSliceContains(got, "--cache") {
 		t.Fatalf("command = %#v, must not install transitive tarballs as direct npm args", got)
-	}
-}
-
-func TestAppendNPMOfflinePromotionFlagsOverridesOperatorCache(t *testing.T) {
-	report := RunReport{
-		Analysis: CommandAnalysis{
-			Manager: "npm",
-			Action:  "install",
-			PackageSpecs: []PackageSpec{{
-				Raw:  "example",
-				Name: "example",
-			}},
-		},
-		Version: VersionInfo{Found: true, Selected: RegistryVersion{Version: "1.0.0"}},
-		Artifacts: []Artifact{
-			{Path: "/tmp/stage/example-1.0.0.tgz", Kind: "tar", Ecosystem: "npm", Name: "example", Version: "1.0.0"},
-			{Path: "/tmp/stage/dep-pkg-2.0.0.tgz", Kind: "tar", Ecosystem: "npm", Name: "dep-pkg", Version: "2.0.0"},
-		},
-	}
-	got := appendNPMOfflinePromotionFlags([]string{"npm", "install", "example@1.0.0", "--cache", "/evil/cache", "--ignore-scripts"}, report)
-	if stringSliceContains(got, "/evil/cache") {
-		t.Fatalf("command = %#v, operator cache must be stripped", got)
-	}
-	if !stringSliceContains(got, "/tmp/stage/npm-offline-cache") || !stringSliceContains(got, "--offline") {
-		t.Fatalf("command = %#v, want seeded offline cache", got)
 	}
 }
 
@@ -405,9 +380,6 @@ func TestPreflightNPMCreateBlocksStagedOneShotUntilExactByteExecution(t *testing
 	bin := t.TempDir()
 	top := makeTestNPMPackageTgz(t, "create-vite", "1.2.3", `{}`)
 	writeFakeTool(t, bin, "npm", `#!/bin/sh
-if [ "$1" = "cache" ] && [ "$2" = "add" ]; then
-  exit 0
-fi
 cat > package-lock.json <<'JSON'
 {
   "lockfileVersion": 3,
@@ -446,18 +418,14 @@ JSON
 		t.Fatal(err)
 	}
 
-	if hasFinding(report.Findings, "npm_staged_execution_unsupported") {
-		t.Fatalf("findings = %#v, did not expect npm_staged_execution_unsupported after one-shot promotion", report.Findings)
+	if report.Decision.Verdict != VerdictBlock {
+		t.Fatalf("verdict = %q, want block for unsupported exact-byte npm one-shot execution; report = %#v", report.Decision.Verdict, report)
 	}
-	if report.Decision.Verdict == VerdictBlock {
-		t.Fatalf("verdict = %q, want non-block for promotable one-shot create; report = %#v", report.Decision.Verdict, report)
+	if !hasFinding(report.Findings, "npm_staged_execution_unsupported") {
+		t.Fatalf("findings = %#v, want npm_staged_execution_unsupported", report.Findings)
 	}
 	if len(report.Artifacts) != 1 || !hasArtifact(report.Artifacts, "create-vite", "1.2.3") {
 		t.Fatalf("artifacts = %#v, want staged create-vite tarball", report.Artifacts)
-	}
-	rewritten := rewriteCommandForSelectedVersion([]string{"npm", "create", "vite@1.2.3"}, report)
-	if !stringSliceContains(rewritten, "--offline") || !stringSliceContains(rewritten, "--cache") {
-		t.Fatalf("rewritten = %#v, want offline cache promotion for create", rewritten)
 	}
 }
 
@@ -817,15 +785,12 @@ cp `+shellQuote(depWheel)+` "$dest/"
 	}
 }
 
-func TestPreflightNPMInstallPromotesMultipleStagedTarballsViaOfflineCache(t *testing.T) {
+func TestPreflightNPMInstallBlocksMultipleStagedTarballsUntilCachePromotion(t *testing.T) {
 	root := t.TempDir()
 	bin := t.TempDir()
 	top := makeTestNPMPackageTgz(t, "example", "2.4.7", `{"dep-pkg":"2.4.7"}`)
 	dep := makeTestNPMPackageTgz(t, "dep-pkg", "2.4.7", `{}`)
 	writeFakeTool(t, bin, "npm", `#!/bin/sh
-if [ "$1" = "cache" ] && [ "$2" = "add" ]; then
-  exit 0
-fi
 cat > package-lock.json <<'JSON'
 {
   "lockfileVersion": 3,
@@ -870,21 +835,14 @@ JSON
 		t.Fatal(err)
 	}
 
-	if hasFinding(report.Findings, "npm_staged_dependency_install_unsupported") {
-		t.Fatalf("findings = %#v, did not expect npm_staged_dependency_install_unsupported after offline cache promotion", report.Findings)
+	if report.Decision.Verdict != VerdictBlock {
+		t.Fatalf("verdict = %q, want block for unsupported exact-byte npm dependency install; report = %#v", report.Decision.Verdict, report)
 	}
-	if report.Decision.Verdict == VerdictBlock {
-		t.Fatalf("verdict = %q, want non-block after exact-byte npm dependency promotion; report = %#v", report.Decision.Verdict, report)
+	if !hasFinding(report.Findings, "npm_staged_dependency_install_unsupported") {
+		t.Fatalf("findings = %#v, want npm_staged_dependency_install_unsupported", report.Findings)
 	}
 	if len(report.Artifacts) != 2 || !hasArtifact(report.Artifacts, "example", "2.4.7") || !hasArtifact(report.Artifacts, "dep-pkg", "2.4.7") {
 		t.Fatalf("artifacts = %#v, want staged top-level and dependency tarballs", report.Artifacts)
-	}
-	rewritten := rewriteCommandForSelectedVersion([]string{"npm", "install", "example"}, report)
-	if !stringSliceContains(rewritten, "--offline") || !stringSliceContains(rewritten, "--cache") {
-		t.Fatalf("rewritten = %#v, want offline cache promotion flags", rewritten)
-	}
-	if stringSliceContains(rewritten, report.Artifacts[1].Path) {
-		t.Fatalf("rewritten = %#v, must not install dependency tarball as a direct root", rewritten)
 	}
 }
 
@@ -1674,9 +1632,6 @@ func TestUsageListsRemoteSandboxCommands(t *testing.T) {
 	for _, want := range []string{
 		"lsec remote-sandbox prepare <run_id> [--out PATH]",
 		"lsec remote-sandbox submit-fake <run_id> [--result PATH]",
-		"lsec remote-sandbox submit <run_id> --result PATH",
-		"lsec remote-sandbox run-local <run_id> [--result PATH]",
-		"lsec macos-detonation prepare-fixture <run_id> [--out PATH]",
 	} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("usage output = %q, want %q", out, want)

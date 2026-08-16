@@ -343,36 +343,6 @@ func TestMacOSDetonationResultRejectsUnstructuredEvidence(t *testing.T) {
 	}
 }
 
-func TestMacOSDetonationResultRejectsNonFixtureSensitiveValues(t *testing.T) {
-	job := validMacOSDetonationJob()
-	tests := map[string]func(*MacOSDetonationResult, string){
-		"process image":      func(v *MacOSDetonationResult, value string) { v.Processes[0].Image = value },
-		"file name":          func(v *MacOSDetonationResult, value string) { v.Files[0].Name = value },
-		"persistence target": func(v *MacOSDetonationResult, value string) { v.Persistence[0].Target = value },
-		"canary name":        func(v *MacOSDetonationResult, value string) { v.Canaries[0].Name = value },
-		"vm instance":        func(v *MacOSDetonationResult, value string) { v.VM.InstanceID = value },
-	}
-	values := []string{
-		"sk-live-secret",
-		"alice@example.com",
-		"id_ed25519",
-		"AKIAIOSFODNN7EXAMPLE",
-		strings.Repeat("QUJD", 20),
-		"fixture-looking-but-not-cataloged",
-	}
-	for field, mutate := range tests {
-		for _, value := range values {
-			t.Run(field+"/"+value, func(t *testing.T) {
-				result := validMacOSDetonationResult()
-				mutate(&result, value)
-				if err := ValidateMacOSDetonationResult(result, job); err == nil {
-					t.Fatal("expected non-fixture result value to be rejected")
-				}
-			})
-		}
-	}
-}
-
 func TestMacOSDetonationResultRejectsAllControlCharacters(t *testing.T) {
 	job := validMacOSDetonationJob()
 	for value := 0; value <= 0x7f; value++ {

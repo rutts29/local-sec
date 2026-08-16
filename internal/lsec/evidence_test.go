@@ -2,10 +2,8 @@ package lsec
 
 import (
 	"encoding/json"
-	"os"
 	"strings"
 	"testing"
-	"time"
 )
 
 func TestEvidenceBundleKeepsLLMInputSecretFree(t *testing.T) {
@@ -701,62 +699,6 @@ func TestEvidenceBundleRedactsNetworkURLPathQueryAndFragment(t *testing.T) {
 	}
 }
 
-func TestEvidenceVersionRedactionAcrossBundleAndHandoffs(t *testing.T) {
-	t.Setenv("PATH", "")
-	paths := pathsFromRoot(t.TempDir())
-	store := NewStore(paths)
-	if err := store.Init(); err != nil {
-		t.Fatal(err)
-	}
-	report := versionRedactionReport()
-	bundle := BuildEvidenceBundle(report)
-	prompt, _, err := BuildLLMReviewPrompt(bundle)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := store.AppendEvent("preflight", report); err != nil {
-		t.Fatal(err)
-	}
-	events, err := os.ReadFile(paths.Events)
-	if err != nil {
-		t.Fatal(err)
-	}
-	remote, err := PrepareRemoteSandboxRequest(store, report.RunID, time.Date(2026, 7, 12, 0, 0, 0, 0, time.UTC))
-	if err != nil {
-		t.Fatal(err)
-	}
-	notification, err := PlanNotification(store, report.RunID, time.Date(2026, 7, 12, 0, 0, 0, 0, time.UTC))
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	for label, body := range map[string]string{
-		"bundle JSON":          evidenceJSON(t, bundle),
-		"event JSONL":          string(events),
-		"remote request":       mustJSON(t, remote),
-		"LLM prompt":           prompt,
-		"notification payload": mustJSON(t, notification),
-	} {
-		assertNoRawVersionEvidence(t, label, body)
-	}
-
-	if bundle.Version.AgeDays != report.Version.AgeDays || !bundle.Version.Found || !bundle.Version.MatureCandidateSelected {
-		t.Fatalf("version metadata = %#v, want age and booleans preserved", bundle.Version)
-	}
-	if !bundle.Version.Selected.PublishedAt.Equal(report.Version.Selected.PublishedAt) || !bundle.Version.Selected.Yanked || !bundle.Version.Latest.Deprecated {
-		t.Fatalf("registry metadata = %#v, want timestamps and flags preserved", bundle.Version)
-	}
-	if got := bundle.Version.Candidates[0].Version; got != "1.2.3" {
-		t.Fatalf("safe candidate version = %q, want 1.2.3", got)
-	}
-	if got := bundle.Version.Skipped[1].AdvisoryIDs[0]; got != "OSV-2026-1234" {
-		t.Fatalf("safe advisory ID = %q, want OSV-2026-1234", got)
-	}
-	if !strings.Contains(report.Version.Requested, "curl-split-secret") {
-		t.Fatalf("source report was mutated: %#v", report.Version)
-	}
-}
-
 func TestEvidenceHashStableForIdenticalRedactedEvidence(t *testing.T) {
 	firstBundle := EvidenceBundle{
 		RunID: "run-redact",
@@ -835,49 +777,6 @@ func mustJSON(t *testing.T, value any) string {
 		t.Fatal(err)
 	}
 	return string(body)
-}
-
-func versionRedactionReport() RunReport {
-	return RunReport{
-		RunID: "run-version-redaction",
-		Version: VersionInfo{
-			Requested:               "curl --token curl-split-secret https://curl-user:curl-pass@packages.example.test/request.tgz?token=curl-query-token#curl-fragment",
-			Selected:                RegistryVersion{Version: "wget --api-key wget-split-secret https://wget-user:wget-pass@packages.example.test/selected.tgz?token=wget-query-token#wget-fragment", PublishedAt: time.Date(2026, 7, 1, 2, 3, 4, 0, time.UTC), Yanked: true},
-			Latest:                  RegistryVersion{Version: "file:///Users/alice/.cache/latest-version.txt", PublishedAt: time.Date(2026, 7, 2, 2, 3, 4, 0, time.UTC), Deprecated: true},
-			AgeDays:                 30,
-			MatureCandidateSelected: true,
-			Candidates: []RegistryVersion{
-				{Version: "1.2.3", PublishedAt: time.Date(2026, 6, 1, 2, 3, 4, 0, time.UTC)},
-				{Version: "path:/private/tmp/local-sec/candidate.tgz?token=candidate-query-token", PublishedAt: time.Date(2026, 6, 2, 2, 3, 4, 0, time.UTC)},
-			},
-			Skipped: []VersionSkip{
-				{Version: "https://skip-user:skip-pass@packages.example.test/skipped.tgz?token=skip-query-token#skip-fragment", Reason: "wget --password skip-split-secret /Users/alice/private/skip.txt", AdvisoryIDs: []string{"https://advisories.example.test/skip?token=skip-id-token", `C:/Users/alice/private/skip-id.txt`}},
-				{Version: "1.2.2", Reason: "maturity window", AdvisoryIDs: []string{"OSV-2026-1234"}},
-			},
-			Maintainers: []string{
-				"alice@example.test",
-				"https://users:maint-pass@packages.example.test/maintainer?token=maintainer-token",
-				"/Users/alice/.npmrc",
-			},
-			Found: true,
-		},
-	}
-}
-
-func assertNoRawVersionEvidence(t *testing.T, label, body string) {
-	t.Helper()
-	for _, forbidden := range []string{
-		"curl-user", "curl-pass", "curl-query-token", "curl-fragment",
-		"wget-user", "wget-pass", "wget-query-token", "wget-fragment",
-		"skip-user", "skip-pass", "skip-query-token", "skip-fragment", "skip-id-token",
-		"curl-split-secret", "wget-split-secret", "skip-split-secret",
-		"maint-pass", "maintainer-token",
-		"/Users/alice", "/private/tmp", "C:/Users/alice",
-	} {
-		if strings.Contains(body, forbidden) {
-			t.Fatalf("%s contains raw version evidence %q: %s", label, forbidden, body)
-		}
-	}
 }
 
 func isSHA256Hex(value string) bool {
