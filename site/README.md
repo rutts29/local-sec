@@ -9,7 +9,7 @@ Static product site under `site/` — no build step, no dependencies.
 | Roadmap | `roadmap.html` |
 | Shared styles (docs/roadmap) | `site.css` |
 
-Docs and roadmap live on the site itself so they work whether the project stays open source or not. GitHub is only used for the optional corner link and release downloads.
+Docs and roadmap live on the site itself. GitHub is used for the optional corner link and release downloads.
 
 ## Run locally
 

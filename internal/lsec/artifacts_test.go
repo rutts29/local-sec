@@ -2,6 +2,7 @@ package lsec
 
 import (
 	"archive/tar"
+	"archive/zip"
 	"bytes"
 	"compress/gzip"
 	"context"
@@ -643,6 +644,73 @@ func TestSafeExtractFileRejectsOversizedFile(t *testing.T) {
 	}
 }
 
+func TestCollectArtifactsBlocksAggregateArchiveBytesAndRemovesPartialExtraction(t *testing.T) {
+	previousBytes := maxExtractedArchiveBytes
+	previousEntries := maxExtractedArchiveEntries
+	maxExtractedArchiveBytes = 6
+	maxExtractedArchiveEntries = 10
+	t.Cleanup(func() {
+		maxExtractedArchiveBytes = previousBytes
+		maxExtractedArchiveEntries = previousEntries
+	})
+
+	staging := t.TempDir()
+	archivePath := filepath.Join(staging, "package.tgz")
+	writeTestTarGz(t, archivePath, map[string]string{
+		"package/a.txt": "1234",
+		"package/b.txt": "5678",
+	})
+
+	artifacts, findings := collectArtifacts(staging)
+
+	if len(artifacts) != 0 {
+		t.Fatalf("artifacts = %#v, want none", artifacts)
+	}
+	if firstFindingSeverity(findings, "artifact_extract_limit_exceeded") != "block" {
+		t.Fatalf("findings = %#v, want blocking aggregate extraction limit", findings)
+	}
+	if !strings.Contains(findings[0].Evidence, "archive extracted data exceeds 6 bytes") {
+		t.Fatalf("finding = %#v, want explicit aggregate byte limit", findings[0])
+	}
+	if _, err := os.Stat(filepath.Join(staging, "extract", "package.tgz")); !os.IsNotExist(err) {
+		t.Fatalf("partial extraction remains: %v", err)
+	}
+}
+
+func TestCollectArtifactsBlocksArchiveEntryCountAndRemovesPartialExtraction(t *testing.T) {
+	previousBytes := maxExtractedArchiveBytes
+	previousEntries := maxExtractedArchiveEntries
+	maxExtractedArchiveBytes = 1024
+	maxExtractedArchiveEntries = 2
+	t.Cleanup(func() {
+		maxExtractedArchiveBytes = previousBytes
+		maxExtractedArchiveEntries = previousEntries
+	})
+
+	staging := t.TempDir()
+	archivePath := filepath.Join(staging, "package.whl")
+	writeTestZip(t, archivePath, map[string]string{
+		"package/a.txt": "a",
+		"package/b.txt": "b",
+		"package/c.txt": "c",
+	})
+
+	artifacts, findings := collectArtifacts(staging)
+
+	if len(artifacts) != 0 {
+		t.Fatalf("artifacts = %#v, want none", artifacts)
+	}
+	if firstFindingSeverity(findings, "artifact_extract_limit_exceeded") != "block" {
+		t.Fatalf("findings = %#v, want blocking archive entry limit", findings)
+	}
+	if !strings.Contains(findings[0].Evidence, "archive entry count exceeds 2") {
+		t.Fatalf("finding = %#v, want explicit entry limit", findings[0])
+	}
+	if _, err := os.Stat(filepath.Join(staging, "extract", "package.whl")); !os.IsNotExist(err) {
+		t.Fatalf("partial extraction remains: %v", err)
+	}
+}
+
 func TestExtractDependencyRefsFromNPMMetadata(t *testing.T) {
 	root := t.TempDir()
 	body := []byte(`{"dependencies":{"safe-pkg":"1.2.3","range-pkg":"^4.5.6"}}`)
@@ -898,6 +966,57 @@ func makeTestNPMPackageTgz(t *testing.T, name, version, dependencies string) []b
 		t.Fatal(err)
 	}
 	return buf.Bytes()
+}
+
+func writeTestTarGz(t *testing.T, path string, files map[string]string) {
+	t.Helper()
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gz := gzip.NewWriter(f)
+	tw := tar.NewWriter(gz)
+	for name, body := range files {
+		if err := tw.WriteHeader(&tar.Header{Name: name, Mode: 0o600, Size: int64(len(body))}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := tw.Write([]byte(body)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := gz.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func writeTestZip(t *testing.T, path string, files map[string]string) {
+	t.Helper()
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	zw := zip.NewWriter(f)
+	for name, body := range files {
+		entry, err := zw.Create(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := entry.Write([]byte(body)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func fakeNPMInstallLockfile(tarballs map[string][]byte) string {

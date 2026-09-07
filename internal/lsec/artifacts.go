@@ -7,6 +7,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -18,8 +19,10 @@ import (
 )
 
 var (
-	maxDownloadedFileBytes int64 = 128 << 20
-	maxExtractedFileBytes  int64 = 128 << 20
+	maxDownloadedFileBytes     int64 = 128 << 20
+	maxExtractedFileBytes      int64 = 128 << 20
+	maxExtractedArchiveBytes   int64 = 512 << 20
+	maxExtractedArchiveEntries       = 10_000
 )
 
 func StageArtifacts(ctx context.Context, staging string, analysis CommandAnalysis, version VersionInfo) ([]Artifact, []Finding) {
@@ -183,7 +186,18 @@ func collectArtifacts(staging string) ([]Artifact, []Finding) {
 		artifact.Ecosystem = artifactEcosystem(artifact.Kind)
 		extractDir := filepath.Join(staging, "extract", entry.Name())
 		if err := extractArtifact(path, extractDir); err != nil {
-			findings = append(findings, Finding{Code: "artifact_extract_failed", Severity: "prompt", File: entry.Name(), Message: err.Error()})
+			_ = os.RemoveAll(extractDir)
+			if isArchiveExtractionLimitExceeded(err) {
+				findings = append(findings, Finding{
+					Code:     "artifact_extract_limit_exceeded",
+					Severity: "block",
+					File:     entry.Name(),
+					Message:  "artifact extraction exceeded safety limits",
+					Evidence: err.Error(),
+				})
+			} else {
+				findings = append(findings, Finding{Code: "artifact_extract_failed", Severity: "prompt", File: entry.Name(), Message: err.Error()})
+			}
 			continue
 		}
 		artifact.Name, artifact.Version, err = ExtractArtifactIdentity(extractDir, artifact.Ecosystem)
@@ -277,11 +291,18 @@ func extractZip(path, dest string) error {
 		return err
 	}
 	defer r.Close()
+	budget := newArchiveExtractionBudget()
+	if budget.maxEntries > 0 && len(r.File) > budget.maxEntries {
+		return archiveEntryLimitExceededError{limit: budget.maxEntries}
+	}
 	for _, f := range r.File {
+		if err := budget.beginEntry(); err != nil {
+			return err
+		}
 		if f.FileInfo().IsDir() {
 			continue
 		}
-		if err := safeExtractFile(dest, f.Name, func(w io.Writer) error {
+		if err := safeExtractFileWithBudget(dest, f.Name, budget, func(w io.Writer) error {
 			rc, err := f.Open()
 			if err != nil {
 				return err
@@ -308,6 +329,7 @@ func extractTarGz(path, dest string) error {
 	}
 	defer gz.Close()
 	tr := tar.NewReader(gz)
+	budget := newArchiveExtractionBudget()
 	for {
 		header, err := tr.Next()
 		if err == io.EOF {
@@ -316,10 +338,13 @@ func extractTarGz(path, dest string) error {
 		if err != nil {
 			return err
 		}
+		if err := budget.beginEntry(); err != nil {
+			return err
+		}
 		if header.FileInfo().IsDir() {
 			continue
 		}
-		if err := safeExtractFile(dest, header.Name, func(w io.Writer) error {
+		if err := safeExtractFileWithBudget(dest, header.Name, budget, func(w io.Writer) error {
 			_, err := io.Copy(w, tr)
 			return err
 		}); err != nil {
@@ -329,6 +354,10 @@ func extractTarGz(path, dest string) error {
 }
 
 func safeExtractFile(dest, name string, write func(io.Writer) error) error {
+	return safeExtractFileWithBudget(dest, name, nil, write)
+}
+
+func safeExtractFileWithBudget(dest, name string, budget *archiveExtractionBudget, write func(io.Writer) error) error {
 	if unsafeArchivePath(name) {
 		return fmt.Errorf("archive path escapes destination: %s", name)
 	}
@@ -344,12 +373,79 @@ func safeExtractFile(dest, name string, write func(io.Writer) error) error {
 	if err != nil {
 		return err
 	}
-	err = write(&limitedByteWriter{w: out, limit: maxExtractedFileBytes, remaining: maxExtractedFileBytes, label: "extracted file"})
+	entryWriter := &limitedByteWriter{w: out, limit: maxExtractedFileBytes, remaining: maxExtractedFileBytes, label: "extracted file"}
+	var destination io.Writer = entryWriter
+	if budget != nil {
+		destination = &archiveBudgetWriter{w: entryWriter, budget: budget}
+	}
+	err = write(destination)
 	closeErr := out.Close()
 	if err != nil {
 		return err
 	}
 	return closeErr
+}
+
+type archiveExtractionBudget struct {
+	remainingBytes int64
+	maxBytes       int64
+	entries        int
+	maxEntries     int
+}
+
+func newArchiveExtractionBudget() *archiveExtractionBudget {
+	return &archiveExtractionBudget{
+		remainingBytes: maxExtractedArchiveBytes,
+		maxBytes:       maxExtractedArchiveBytes,
+		maxEntries:     maxExtractedArchiveEntries,
+	}
+}
+
+func (b *archiveExtractionBudget) beginEntry() error {
+	if b.maxEntries > 0 && b.entries >= b.maxEntries {
+		return archiveEntryLimitExceededError{limit: b.maxEntries}
+	}
+	b.entries++
+	return nil
+}
+
+type archiveBudgetWriter struct {
+	w      io.Writer
+	budget *archiveExtractionBudget
+}
+
+func (w *archiveBudgetWriter) Write(p []byte) (int, error) {
+	if w.budget.maxBytes <= 0 {
+		return w.w.Write(p)
+	}
+	if int64(len(p)) > w.budget.remainingBytes {
+		if w.budget.remainingBytes <= 0 {
+			return 0, limitExceededError{label: "archive extracted data", limit: w.budget.maxBytes}
+		}
+		n, err := w.w.Write(p[:int(w.budget.remainingBytes)])
+		w.budget.remainingBytes -= int64(n)
+		if err != nil {
+			return n, err
+		}
+		return n, limitExceededError{label: "archive extracted data", limit: w.budget.maxBytes}
+	}
+	n, err := w.w.Write(p)
+	w.budget.remainingBytes -= int64(n)
+	return n, err
+}
+
+type archiveEntryLimitExceededError struct {
+	limit int
+}
+
+func (e archiveEntryLimitExceededError) Error() string {
+	return fmt.Sprintf("archive entry count exceeds %d", e.limit)
+}
+
+func isArchiveExtractionLimitExceeded(err error) bool {
+	var byteLimit limitExceededError
+	var entryLimit archiveEntryLimitExceededError
+	return errors.As(err, &byteLimit) || errors.As(err, &entryLimit)
 }
 
 type limitedByteWriter struct {

@@ -98,27 +98,33 @@ func runMacOSDetonationCLI(args []string, stdout io.Writer, store Store) error {
 		if err != nil {
 			return err
 		}
-		jobPath := filepath.Join(os.TempDir(), "lsec-macos-job-"+job.RunID+".json")
-		resultPath := filepath.Join(os.TempDir(), "lsec-macos-result-"+job.RunID+".json")
+		workspace, err := newPrivateTempWorkspace("lsec-macos-detonation-")
+		if err != nil {
+			return err
+		}
+		defer workspace.remove()
 		jobBody, err := json.Marshal(job)
 		if err != nil {
 			return err
 		}
-		if err := os.WriteFile(jobPath, jobBody, 0o600); err != nil {
+		jobPath, err := workspace.writeExclusive("job.json", jobBody)
+		if err != nil {
 			return err
 		}
-		defer os.Remove(jobPath)
+		resultPath, err := workspace.path("result.json")
+		if err != nil {
+			return err
+		}
 		cmd := exec.Command(runner, "--job", jobPath, "--result", resultPath)
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
 		if err := cmd.Run(); err != nil {
 			return fmt.Errorf("external macOS detonation runner failed: %w", err)
 		}
-		resultBody, err := os.ReadFile(resultPath)
+		resultBody, err := workspace.readRegular("result.json")
 		if err != nil {
 			return err
 		}
-		defer os.Remove(resultPath)
 		result, err := ParseMacOSDetonationResultJSON(resultBody, job)
 		if err != nil {
 			return err

@@ -55,7 +55,7 @@ lsec approvals revoke <ecosystem> <name> <version> [64-hex-sha256]
 - For `python -m pip` and versioned Python interpreter shims, runs wheel-only staging through the same Python executable that the final install will use.
 - Extracts and scans staged artifacts before running the real install.
 - Applies embedded skillpack pattern sets from `internal/lsec/skillpacks` for credential exfiltration, network behavior, obfuscation, macOS persistence, and agent persistence without requiring external runtime files.
-- Caps direct downloader payloads and extracted archive members at 128 MiB per file.
+- Caps direct downloader payloads and extracted archive members at 128 MiB per file, with a 512 MiB and 10,000-entry extraction budget for each archive.
 - When one top-level npm tarball or Python wheel is staged, `guard` installs that exact staged artifact instead of re-fetching the package by version; real npm installs run with `--ignore-scripts`, and single-wheel pip installs run with `--no-index --no-deps`.
 - When an approved `curl` or `wget` download is staged, `guard` streams the staged bytes to stdout instead of re-running the downloader; reports and prompts go to stderr so stdout remains safe for the approved payload.
 - Python wheelhouses with resolved dependency wheels are installed with `--no-index --find-links`, so pip can satisfy dependencies only from staged, scanned wheels.

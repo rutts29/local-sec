@@ -6,8 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os"
-	"path/filepath"
 	"time"
 )
 
@@ -117,15 +115,19 @@ func runRemoteSandboxCLI(args []string, stdout io.Writer, store Store) error {
 			return err
 		}
 		// Round-trip through submit policy so local worker results obey the same gates.
-		tmp := filepath.Join(os.TempDir(), fmt.Sprintf("lsec-remote-worker-%s.json", result.RunID))
+		workspace, err := newPrivateTempWorkspace("lsec-remote-worker-")
+		if err != nil {
+			return err
+		}
+		defer workspace.remove()
 		body, err := json.Marshal(result)
 		if err != nil {
 			return err
 		}
-		if err := os.WriteFile(tmp, body, 0o600); err != nil {
+		tmp, err := workspace.writeExclusive("result.json", body)
+		if err != nil {
 			return err
 		}
-		defer os.Remove(tmp)
 		validated, err := SubmitRemoteSandboxResult(store, args[1], tmp, time.Now().UTC())
 		if err != nil {
 			return err
