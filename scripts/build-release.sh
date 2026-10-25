@@ -92,7 +92,7 @@ build_one() {
   tmp="$output/$name"
   mkdir -p "$tmp/docs"
   env CGO_ENABLED=0 GOOS="$goos" GOARCH="$goarch" go build -trimpath -ldflags "$ldflags" -o "$tmp/$binary" ./cmd/lsec
-  cp README.md SECURITY.md "$tmp/"
+  cp README.md SECURITY.md LICENSE "$tmp/"
   printf '%s\n' "$version" > "$tmp/VERSION"
   cp docs/technical-overview.md docs/roadmap.md docs/threat-model-and-limitations.md "$tmp/docs/"
   env COPYFILE_DISABLE=1 COPY_EXTENDED_ATTRIBUTES_DISABLE=1 tar --format ustar --exclude '*/._*' -C "$output" -czf "$output/$name.tar.gz" "$name"

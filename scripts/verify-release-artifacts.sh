@@ -184,6 +184,7 @@ for target in darwin_amd64 darwin_arm64 linux_amd64 linux_arm64 windows_amd64; d
       required[name "/"] = 1
       required[name "/README.md"] = 1
       required[name "/SECURITY.md"] = 1
+      required[name "/LICENSE"] = 1
       required[name "/VERSION"] = 1
       required[name "/" binary] = 1
       required[name "/docs/"] = 1
@@ -216,6 +217,7 @@ for target in darwin_amd64 darwin_arm64 linux_amd64 linux_arm64 windows_amd64; d
   require_directory_member "$archive" "$name/docs/"
   require_regular_member "$archive" "$name/README.md"
   require_regular_member "$archive" "$name/SECURITY.md"
+  require_regular_member "$archive" "$name/LICENSE"
   require_regular_member "$archive" "$name/VERSION"
   require_regular_member "$archive" "$name/docs/technical-overview.md"
   require_regular_member "$archive" "$name/docs/roadmap.md"

@@ -804,6 +804,50 @@ func TestVerifyReleaseArtifactsFailsWhenArchiveMissingSecurityPolicy(t *testing.
 	}
 }
 
+func TestVerifyReleaseArtifactsRequiresLicense(t *testing.T) {
+	root := repoRootForTest(t)
+	for _, target := range releaseTargetsForTest() {
+		t.Run(target, func(t *testing.T) {
+			dist := t.TempDir()
+			writeReleaseArchivesMissingPath(t, dist, target, "LICENSE")
+			writeChecksums(t, dist)
+
+			cmd := exec.Command("sh", filepath.Join(root, "scripts", "verify-release-artifacts.sh"))
+			cmd.Dir = root
+			cmd.Env = append(os.Environ(), "DIST="+dist, "VERSION=0.1.0")
+			out, err := cmd.CombinedOutput()
+			if err == nil {
+				t.Fatal("verify-release-artifacts succeeded when an archive was missing LICENSE")
+			}
+			if !strings.Contains(string(out), "is missing required archive member: lsec_0.1.0_"+target+"/LICENSE") {
+				t.Fatalf("verify-release-artifacts failed without reporting the missing LICENSE:\n%s", out)
+			}
+		})
+	}
+}
+
+func TestVerifyReleaseArtifactsRejectsLicenseSymlink(t *testing.T) {
+	root := repoRootForTest(t)
+	dist := t.TempDir()
+	writeReleaseArchivesWithRequiredEntry(t, dist, "linux_amd64", "LICENSE", tar.Header{
+		Typeflag: tar.TypeSymlink,
+		Mode:     0o777,
+		Linkname: "README.md",
+	})
+	writeChecksums(t, dist)
+
+	cmd := exec.Command("sh", filepath.Join(root, "scripts", "verify-release-artifacts.sh"))
+	cmd.Dir = root
+	cmd.Env = append(os.Environ(), "DIST="+dist, "VERSION=0.1.0")
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatal("verify-release-artifacts succeeded when LICENSE was a symlink")
+	}
+	if !strings.Contains(string(out), "LICENSE is not a regular file") {
+		t.Fatalf("verify-release-artifacts failed without reporting the LICENSE symlink:\n%s", out)
+	}
+}
+
 func TestVerifyReleaseArtifactsFailsWhenArchiveMissingThreatModel(t *testing.T) {
 	root := repoRootForTest(t)
 	dist := t.TempDir()
@@ -923,8 +967,9 @@ func releaseTargetsForTest() []string {
 
 func releaseFilesForTest(name, binary string) map[string]string {
 	files := map[string]string{
-		name + "/README.md":                            "See [security](SECURITY.md), [overview](docs/technical-overview.md), [threat model](docs/threat-model-and-limitations.md), and [roadmap](docs/roadmap.md).\n",
+		name + "/README.md":                            "See [security](SECURITY.md), [overview](docs/technical-overview.md), [threat model](docs/threat-model-and-limitations.md), [roadmap](docs/roadmap.md), and [license](LICENSE).\n",
 		name + "/SECURITY.md":                          "security policy",
+		name + "/LICENSE":                              "MIT License\n",
 		name + "/VERSION":                              "0.1.0\n",
 		name + "/docs/technical-overview.md":           "technical overview",
 		name + "/docs/roadmap.md":                      "roadmap",
