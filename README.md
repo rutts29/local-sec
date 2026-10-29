@@ -84,4 +84,4 @@ This builds archives for macOS, Linux, and Windows under `dist-release/`, includ
 
 ## License
 
-[MIT](LICENSE). Shared for others to run, study and adapt.
+[Apache License 2.0](LICENSE). Shared for others to run, study and adapt.
